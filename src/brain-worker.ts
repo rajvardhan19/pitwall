@@ -4,9 +4,11 @@
 import { env, pipeline } from '@huggingface/transformers';
 import type { TextGenerationPipeline } from '@huggingface/transformers';
 import type { ChatMessage } from './brain-prompt.ts';
+import { routeToLocal } from './local-models.ts';
+import type { LocalModels } from './local-models.ts';
 
 env.allowLocalModels = false;
-interface LoadMessage { id: number; type: 'load'; model: string; dtype: string }
+interface LoadMessage { id: number; type: 'load'; model: string; dtype: string; local?: LocalModels | null }
 interface ChatRequest { id: number; type: 'chat'; messages: ChatMessage[]; maxTokens: number }
 
 let generator: TextGenerationPipeline | null = null;
@@ -22,12 +24,14 @@ async function gpuDtype(preferred: string) {
 
 async function load(m: LoadMessage) {
   const dtype = await gpuDtype(m.dtype);
+  // Saved weights load from this computer (npm run models); a dtype that was not saved still downloads.
+  routeToLocal(m.local ?? null, env, [`${m.model}/onnx/model_${dtype}.onnx`, `${m.model}/onnx/model_${dtype}.onnx_data`]);
   generator = await pipeline('text-generation', m.model, {
     device: 'webgpu',
     dtype: dtype as 'q4',
     progress_callback: p => {
       // Report the weights download only; tokenizer and config files are tiny.
-      if ('progress' in p && 'file' in p && /onnx/.test(String(p.file))) self.postMessage({ type: 'progress', progress: p.progress });
+      if ('progress' in p && 'file' in p && /onnx/.test(String(p.file))) self.postMessage({ type: 'progress', file: p.file, loaded: 'loaded' in p ? p.loaded : 0, total: 'total' in p ? p.total : 0, progress: p.progress });
     },
   }) as TextGenerationPipeline;
   // One tiny run compiles the shaders so the first real reply is quick.

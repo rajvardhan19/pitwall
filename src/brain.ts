@@ -1,6 +1,9 @@
 // Client for the in-browser team chat model, warmed by the race setup screen.
 import { buildPrompt, cleanReply } from './brain-prompt.ts';
 import type { BrainRequest } from './brain-prompt.ts';
+import type { LocalModels } from './local-models.ts';
+import { weightsProgress } from './team-setup.ts';
+import type { Downloads } from './team-setup.ts';
 
 // Chosen by testing on the real prompt in the browser: Llama 3.2 1B stays in persona and on the
 // facts; Qwen2.5 0.5B drifted off topic (and loops at half precision). WebGPU only: on the CPU
@@ -16,6 +19,13 @@ type Pending = { resolve: (data: { text?: string }) => void; reject: (e: Error) 
 export class TeamBrain {
   state: 'off' | 'loading' | 'ready' | 'error' = 'off';
   onStatus: (text: string, error?: boolean) => void = () => {};
+  /** Model files saved on this computer, if the page looked for them (resolved before loading). */
+  local: Promise<LocalModels | null> | null = null;
+  private onDisk = false;
+  /** Download progress of the model weights, 0–1, and whether the first-reply warm-up is running: for the setup screen. */
+  progress = 0;
+  warming = false;
+  private downloads: Downloads = new Map();
   private worker: Worker | null = null;
   private serial = 0;
   private turn = 0;
@@ -29,8 +39,8 @@ export class TeamBrain {
     if (!this.worker) {
       this.worker = new Worker(new URL('./brain-worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = ({ data }) => {
-        if (data.type === 'progress') { if (this.state === 'loading') this.onStatus(`Downloading team chat model · ${Math.round(data.progress)}%`); return; }
-        if (data.type === 'stage') { if (this.state === 'loading') this.onStatus(data.text); return; }
+        if (data.type === 'progress') { this.downloads.set(String(data.file), { loaded: data.loaded ?? 0, total: data.total ?? 0 }); this.progress = weightsProgress(this.downloads); if (this.state === 'loading') this.onStatus(`Loading team chat model${this.onDisk ? ' from this computer' : ''} · ${Math.round(this.progress * 100)}%`); return; }
+        if (data.type === 'stage') { this.warming = true; if (this.state === 'loading') this.onStatus(data.text); return; }
         const p = this.pending.get(data.id);
         if (!p) return;
         clearTimeout(p.timer);
@@ -66,8 +76,16 @@ export class TeamBrain {
       return Promise.reject(new Error(NO_WEBGPU));
     }
     this.state = 'loading';
-    this.onStatus(`Loading team chat model · ${BRAIN_MODEL.size}, first time only`);
-    this.loading = this.request({ type: 'load', model: BRAIN_MODEL.id, dtype: BRAIN_MODEL.dtype }, 900000)
+    this.warming = false;
+    this.downloads.clear();
+    this.progress = 0;
+    this.onStatus('Loading team chat model…');
+    const load = (local: LocalModels | null) => {
+      this.onDisk = !!local?.files.some(f => f.startsWith(`${BRAIN_MODEL.id}/onnx/`));
+      this.onStatus(this.onDisk ? 'Loading team chat model from this computer…' : `Loading team chat model · the first visit downloads ${BRAIN_MODEL.size}`);
+      return this.request({ type: 'load', model: BRAIN_MODEL.id, dtype: BRAIN_MODEL.dtype, local }, 900000);
+    };
+    this.loading = (this.local ? this.local.then(load) : load(null))
       .then(() => {
         this.state = 'ready';
         this.onStatus('Team chat ready · runs on this device’s GPU');

@@ -14,6 +14,9 @@ import {driverNumber,layoutMarkers} from './map.ts';
 import {Conversation} from './conversation.ts';
 import type {BrainCall, Line} from './conversation.ts';
 import {TeamBrain, BRAIN_MODEL} from './brain.ts';
+import {findLocalModels} from './local-models.ts';
+import {chooseTier,probeDevice,setupProgress,lightsOn} from './team-setup.ts';
+import type {TierChoice} from './team-setup.ts';
 import {raceFacts} from './brain-prompt.ts';
 import type {DebriefAnalysis,Result} from './analysis.ts';
 
@@ -209,9 +212,72 @@ function beginRace(){
   race.status='running';convo.start(race);
 }
 const INSTRUCTIONS=`<div class="brief-instructions"><p><b>You run the strategy.</b> Pick a compound, call a pit stop, and manage each driver’s pace. The team talks to you: drivers ask to push or box, and your strategist brings decisions when the race turns. Answer “yes” or “no”, use the quick replies, or give your own call: “car two, box for mediums”, “Theo, let Nico through”. The race slows to 1× when someone needs an answer.</p><p><b>Replay fairly.</b> The same race and seed with the same calls always produce the same result. After the flag, compare with a sensible default engineer and see what each call was worth.</p></div>`;
-let radioLoadingStatus='Preparing radio voices…',chatLoadingStatus='Preparing team chat…';
-function loadingHTML(){return `<div class="team-loading" aria-label="Team preparation"><b>PREPARING YOUR TEAM</b><p data-loading-radio>${esc(radioLoadingStatus)}</p><p data-loading-chat>${esc(chatLoadingStatus)}</p><small>Loads automatically while you choose a race. First visit downloads voices and team chat; cached files are reused on later visits. Audio starts after you enter the pit wall.</small></div>`;}
-function updateLoading(){document.querySelectorAll('[data-loading-radio]').forEach(el=>el.textContent=radioLoadingStatus);document.querySelectorAll('[data-loading-chat]').forEach(el=>el.textContent=chatLoadingStatus);}
+let radioLoadingStatus='Preparing radio voices…',chatLoadingStatus='Preparing team chat…',modelsOnDisk=false;
+function loadingNote(){return modelsOnDisk?'Loading from this computer. Pick your race while your team gets ready.':'One-time download of about 1.4 GB on the first visit; later visits load from the browser’s copy. Pick your race while your team gets ready.';}
+// ───────────── team setup ─────────────
+// Capable computers download and set up the neural voices and team chat before the first race
+// (the start button waits, with start lights filling up). Phones and weak devices get the
+// lite radio: text plus the recorded team clips, nothing large downloaded.
+const RADIO_KEY='pitwall.radio';
+let device:TierChoice|null=null;
+let voiceFailure:string|null=null,chatFailure:string|null=null,withoutChat=false,readySince=0;
+function radioOverride(){const asked=new URLSearchParams(location.search).get('radio');if(asked==='full'||asked==='lite')return asked;try{return localStorage.getItem(RADIO_KEY);}catch{return null;}}
+function gate(){
+  if(!device)return {ready:false,fraction:0};
+  if(device.tier==='lite')return {ready:true,fraction:1};
+  const fraction=setupProgress({voice:{progress:voice.progress,ready:voice.ready},chat:{progress:brain.progress,warming:brain.warming,ready:brain.ready||withoutChat}});
+  return {ready:voice.ready&&(brain.ready||withoutChat),fraction};
+}
+function startTeamSetup(){
+  voiceFailure=null;
+  // Voices first: they carry the race; team chat would compete with them for bandwidth and the GPU.
+  void voice.preload().catch(e=>{voiceFailure=e instanceof Error?e.message:String(e);}).finally(()=>{updateLoading();if(!brain.ready)void prepareTeamChat();});
+}
+function useLite(reason:string,forced=true){
+  device={tier:'lite',reason,forced};voice.neural=false;
+  radioLoadingStatus='Text radio with recorded team clips';chatLoadingStatus='Team chat is off on this device';
+  const button=$<HTMLButtonElement>('#brain-enable');button.disabled=false;button.textContent='Load team chat anyway · 1 GB';
+}
+function loadingHTML(){
+  if(!device)return `<div class="team-loading" data-gate><div class="gate-head"><b>CHECKING THIS DEVICE…</b></div></div>`;
+  if(device.tier==='lite')return `<div class="team-loading lite" data-gate><div class="gate-head"><b>TEXT RADIO ON THIS DEVICE</b></div><p>Your team talks on screen, with recorded team clips. Neural voices and team chat need a desktop browser with GPU access and a one-time 1.4 GB download${device.forced?'':` (this looks like a ${esc(device.reason)})`}.</p><div class="gate-actions"><button type="button" class="secondary" data-gate-action="full">Load voices and team chat anyway</button></div></div>`;
+  return `<div class="team-loading" data-gate aria-label="Team preparation"><div class="gate-head"><b data-gate-title>PREPARING YOUR TEAM</b><span data-gate-pct>0%</span></div><div class="start-lights" data-lights aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><div class="gate-bar"><span data-gate-bar></span></div><p data-loading-radio>${esc(radioLoadingStatus)}</p><p data-loading-chat>${esc(chatLoadingStatus)}</p><div class="gate-actions" data-gate-actions></div><small data-loading-note>${loadingNote()}</small></div>`;
+}
+/** Re-render the setup panel (after the device check, or a switch between full and text radio). */
+function refreshLoader(){document.querySelectorAll('[data-gate]').forEach(el=>el.outerHTML=loadingHTML());updateLoading();}
+function updateLoading(){
+  document.querySelectorAll('[data-loading-radio]').forEach(el=>el.textContent=radioLoadingStatus);document.querySelectorAll('[data-loading-chat]').forEach(el=>el.textContent=chatLoadingStatus);document.querySelectorAll('[data-loading-note]').forEach(el=>el.textContent=loadingNote());
+  const g=gate(),pct=Math.round(g.fraction*100);
+  if(g.ready&&!readySince)readySince=performance.now();
+  // The lights go out once, when the team becomes ready; a later re-render shows them already out.
+  const instant=g.ready&&performance.now()-readySince>2500;
+  document.querySelectorAll('[data-gate]').forEach(el=>el.classList.toggle('ready',g.ready));
+  document.querySelectorAll('[data-gate-title]').forEach(el=>el.textContent=g.ready?'LIGHTS OUT · YOUR TEAM IS READY':'PREPARING YOUR TEAM');
+  document.querySelectorAll('[data-gate-pct]').forEach(el=>el.textContent=g.ready?'READY':`${pct}%`);
+  document.querySelectorAll<HTMLElement>('[data-gate-bar]').forEach(el=>el.style.width=`${g.ready?100:pct}%`);
+  const lit=g.ready?5:lightsOn(g.fraction);
+  document.querySelectorAll('[data-lights]').forEach(el=>{Array.from(el.children).forEach((light,i)=>{light.classList.toggle('on',i<lit);light.classList.toggle('next',!g.ready&&i===lit);});el.classList.toggle('out',g.ready);el.classList.toggle('instant',instant);});
+  // A failed download never traps the player: retry, or race on with what did load.
+  const actions=voiceFailure?`<button type="button" class="secondary" data-gate-action="retry-voices">Retry voices</button><button type="button" class="secondary" data-gate-action="text-radio">Race with text radio</button>`
+    :chatFailure&&!withoutChat?`<button type="button" class="secondary" data-gate-action="retry-chat">Retry team chat</button><button type="button" class="secondary" data-gate-action="no-chat">Race without team chat</button>`:'';
+  document.querySelectorAll('[data-gate-actions]').forEach(el=>{if(el.innerHTML!==actions)el.innerHTML=actions;});
+  const start=document.querySelector<HTMLButtonElement>('#start-session');
+  if(start&&race.status==='ready'){
+    start.dataset.label??=start.innerHTML;
+    start.disabled=!g.ready;start.classList.toggle('gated',!g.ready);
+    const label=g.ready?start.dataset.label:`PREPARING YOUR TEAM · ${pct}% <span class="gate-spinner"></span>`;
+    if(start.innerHTML!==label)start.innerHTML=label;
+  }
+}
+document.addEventListener('click',e=>{
+  const action=(e.target as Element).closest<HTMLButtonElement>('[data-gate-action]')?.dataset.gateAction;if(!action)return;
+  if(action==='full'){try{localStorage.setItem(RADIO_KEY,'full');}catch{/* private mode */}device={tier:'full',reason:'chosen on this browser',forced:true};voice.neural=true;radioLoadingStatus='Preparing radio voices…';chatLoadingStatus='Preparing team chat…';refreshLoader();startTeamSetup();return;}
+  if(action==='retry-voices')startTeamSetup();
+  if(action==='text-radio'){useLite('text radio chosen');refreshLoader();return;}
+  if(action==='retry-chat'){chatFailure=null;void prepareTeamChat();}
+  if(action==='no-chat')withoutChat=true;
+  updateLoading();
+});
 function headsetHTML(){return `<label class="brief-audio"><input type="checkbox" id="brief-audio" ${race.status==='ready'||voice.enabled?'checked':''}> Headset on · local neural voices, radio cues & race ambience</label>`;}
 /** Switch to another race while the picker is open: rebuild the race behind the modal. */
 function choose(next:RaceSetup){
@@ -262,6 +328,7 @@ function showBriefing() {
   modal.classList.toggle('picker-modal',picking);
   modal.innerHTML=picking?pickerHTML():briefHTML();
   modal.querySelector('h2')?.insertAdjacentHTML('afterend',loadingHTML());
+  updateLoading();
   if(!modal.open)modal.showModal();
   const on=<T extends HTMLElement>(sel:string,fn:(el:T)=>void)=>modal.querySelectorAll<T>(sel).forEach(fn);
   if(picking){
@@ -283,17 +350,18 @@ function showBriefing() {
     modal.querySelector<HTMLButtonElement>('#season-sim')?.addEventListener('click',()=>{season=simulateRound(season!).season;saveSeason(season);choose(seasonSetup(season)??{...setup});});
     modal.querySelector<HTMLButtonElement>('#season-abandon')?.addEventListener('click',()=>{if(!seasonOver(season!)&&!confirm('Abandon this season? Its standings will be deleted.'))return;season=null;saveSeason(null);choose({...setup,mode:'season',round:undefined,brief:undefined});});
   }else $('#change-race').onclick=()=>{modal.close();reset(true,true);};
-  modal.querySelector<HTMLButtonElement>('#start-session')?.addEventListener('click',async()=>{const starting=race.status==='ready';setAudio($<HTMLInputElement>('#brief-audio').checked);if(voice.enabled&&!voice.ready){
-    const button=$<HTMLButtonElement>('#start-session');button.disabled=true;button.textContent='CONNECTING TEAM RADIO…';
-    // Wait for the live voices, but never trap the player here: Start now races with text radio
-    // and the voices join as soon as they load.
-    const connecting=voice.connect();connecting.catch(()=>{});
-    let skip=()=>{};const skipped=new Promise<'skip'>(resolve=>{skip=()=>resolve('skip');});
-    const now=document.createElement('button');now.type='button';now.className='secondary start-now';now.textContent='Start now · text radio until the voices load';now.onclick=skip;button.after(now);
-    const outcome=await Promise.race([connecting.then(()=>'ready' as const,()=>'failed' as const),skipped]);
-    now.remove();button.disabled=false;
-    if(outcome==='failed'){button.textContent='RETRY HEADSET · or uncheck Headset to play muted';return;}
-  }modal.close();modal.classList.remove('picker-modal');briefing=false;if(starting)beginRace();lastFrame=performance.now();render();});
+  modal.querySelector<HTMLButtonElement>('#start-session')?.addEventListener('click',async()=>{
+    const starting=race.status==='ready';
+    // A new race waits for the team setup (the button stays locked until then).
+    if(starting&&!gate().ready)return;
+    setAudio($<HTMLInputElement>('#brief-audio').checked);
+    // Text radio: open the channel for the recorded team clips. Mid-race, voices that dropped out reload in the background.
+    if(starting&&voice.enabled&&!voice.ready){
+      const button=$<HTMLButtonElement>('#start-session');button.disabled=true;button.textContent='CONNECTING TEAM RADIO…';button.dataset.connecting='1';
+      try{await voice.connect();}catch{button.disabled=false;delete button.dataset.connecting;button.textContent='RETRY HEADSET · or uncheck Headset to play muted';return;}
+      button.disabled=false;delete button.dataset.connecting;
+    }
+    modal.close();modal.classList.remove('picker-modal');briefing=false;if(starting)beginRace();lastFrame=performance.now();render();});
 }
 function outcome(n:1|2,pos:number){
   const ob=race.config.objectives[n],name=n===1?'Theo':'Nico',ok=onTarget(race,n,pos);
@@ -350,26 +418,30 @@ app.addEventListener('click',e=>{
   if(b.dataset.action){const car=Number(b.dataset.car);const action=b.dataset.action as Command['action'];send(action==='pit'?{car,action,compound:nextTyre[car]}:{car,action} as Command);}
 });
 app.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&(e.target as Element).matches('.map-marker')){e.preventDefault();(e.target as Element).dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
-$('#play').onclick=()=>{if(race.status==='finished'){showDebrief();return;}if(race.status==='ready'){briefing=false;$<HTMLDialogElement>('#modal').close();beginRace();}else race.status=race.status==='running'?'paused':'running';if(race.status==='paused')interruptRadio();accumulator=0;lastFrame=performance.now();render();};
+$('#play').onclick=()=>{if(race.status==='finished'){showDebrief();return;}if(race.status==='ready'){if(!gate().ready){showBriefing();return;}briefing=false;$<HTMLDialogElement>('#modal').close();beginRace();}else race.status=race.status==='running'?'paused':'running';if(race.status==='paused')interruptRadio();accumulator=0;lastFrame=performance.now();render();};
 $('#guide').onclick=()=>{guided=!guided;$('#guide').textContent=guided?'Hints on':'Hints off';$('#hint').hidden=!guided;document.body.classList.toggle('hints-off',!guided);};
 function setAudio(enabled:boolean){voice.enabled=enabled;sound.setEnabled(enabled);$('#sound').textContent=enabled?'Audio on':'Audio off';$('#sound').setAttribute('aria-pressed',String(enabled));if(!enabled)interruptRadio();else voice.unlock();}
 $('#sound').onclick=()=>{setAudio(!voice.enabled);if(voice.enabled)voice.prepare().then(()=>voice.say('Radio check. Pit wall online.','DATA ENGINEER')).catch(()=>{/* status shows the failure */});};
-voice.onStatus=(text,error=false)=>{radioLoadingStatus=text;updateLoading();$('#radio-status').textContent=error?`${text} Race continues; use Load & hear voice to retry.`:text;$('#radio-status').classList.toggle('voice-error',error);const button=document.querySelector('#start-session');if(button instanceof HTMLButtonElement&&button.disabled)button.textContent=text;};
+voice.onStatus=(text,error=false)=>{radioLoadingStatus=text;updateLoading();$('#radio-status').textContent=error?`${text} Race continues; use Load & hear voice to retry.`:text;$('#radio-status').classList.toggle('voice-error',error);const button=document.querySelector('#start-session');if(button instanceof HTMLButtonElement&&button.dataset.connecting)button.textContent=text;};
 $('#radio-preview').onclick=async()=>{
   const button=$<HTMLButtonElement>('#radio-preview');button.disabled=true;
   if(race.status==='running')race.status='paused';
   interruptRadio();setAudio(true);
+  if(!voice.neural){$('#radio-status').textContent='Text radio on this device. Choose “Load voices and team chat anyway” in the race menu for neural voices.';button.disabled=false;return;}
   const samples:Record<string,string>={LAU:'Copy. Rear tyres are going. Let’s get the stop right.',REY:'Come on, I’ve got the pace. Let me push!',STRATEGIST:'Safety car! Do we box? Both, one, or stay out?','TYRE SPECIALIST':'Front left is dropping off. We need to box this lap.','DATA ENGINEER':'Gap ahead, two point four. Keep it tidy.','RACE CONTROL':'Safety car deployed. Debris at turn nine.','PIT CREW':'Mediums ready. In you come.'};
   try{await voice.prepare();const speaker=$<HTMLSelectElement>('#radio-cast').value;voice.say(samples[speaker],speaker);}catch{/* Status shows recovery; never fall back to browser voices. */}finally{button.disabled=false;}
 };
 brain.onStatus=(text,error=false)=>{
+  if(error)chatFailure=text;
   chatLoadingStatus=text;updateLoading();
   $('#brain-status').textContent=text;$('#brain-status').classList.toggle('voice-error',error);
   const button=$<HTMLButtonElement>('#brain-enable');
   button.disabled=!error;button.textContent=error?'Retry team chat':brain.ready?'Team chat ready':text;
 };
 async function prepareTeamChat(){
-  try{await brain.enable();}catch{/* Loading status provides the retry action; race calls remain available. */}
+  chatFailure=null;
+  try{await brain.enable();}catch(e){chatFailure=e instanceof Error?e.message:String(e);}
+  updateLoading();
 }
 $('#brain-enable').onclick=()=>{void prepareTeamChat();};
 $('#focus').onclick=()=>{const focus=document.body.classList.toggle('focus-mode');$('#focus').setAttribute('aria-pressed',String(focus));$('#focus').textContent=focus?'All telemetry':'Race view';};
@@ -462,7 +534,13 @@ function frame(now:number) {
   requestAnimationFrame(frame);
 }
 renderChrome();render();showBriefing();requestAnimationFrame(frame);
-// Begin downloads immediately, before the player enters the race. No microphone or audio
+// Begin loading immediately, before the player enters the race. No microphone or audio
 // permission is needed to warm the workers; playback is unlocked by the start button.
-void voice.preload().catch(()=>{/* Status shows a retry; starting the race can try again. */});
-void prepareTeamChat();
+// Model files saved by `npm run models` load from this computer instead of Hugging Face.
+const localModels=findLocalModels();voice.local=localModels;brain.local=localModels;voiceInput.local=localModels;
+void localModels.then(local=>{modelsOnDisk=!!local;updateLoading();});
+void probeDevice().catch(()=>({mobile:false,webgpu:false,fallbackAdapter:false})).then(info=>{
+  device=chooseTier(info,radioOverride());
+  if(device.tier==='full'){voice.neural=true;startTeamSetup();}else useLite(device.reason,device.forced);
+  refreshLoader();
+});

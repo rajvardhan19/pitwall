@@ -67,7 +67,7 @@ export class Conversation {
   /** True while the radio is still speaking earlier lines; unprompted talk waits for a gap. */
   radioBusy: () => boolean = () => false;
 
-  private clarification: {text:string;until:number}|null=null;
+  private clarification: {text:string;until:number;reason:'which-car'|'which-tyre'}|null=null;
   private lastTopic: Topic|null=null;
   private chatSpeaker: BrainSpeaker|null=null;
   private teamReplies: {due:number;car:1|2;kind:'tyres'|'gap'|'crew'|'opening-tyres'|'opening-gap'}[]=[];
@@ -1079,8 +1079,11 @@ export class Conversation {
     }
     const focus = this.focusQuestion(text);
     const clarification=this.clarification;this.clarification=null;
+    // A short answer to “Which car?” or “Which tyre?” completes the call it was asked about.
     const shortCar=/^(?:car (?:one|two)|theo|nico|laurent|reyes)$/.test(normalized);
-    const intent = parseIntent(clarification&&this.now()<clarification.until&&shortCar ? `${text}, ${clarification.text}` : text, focus?.car || this.recentCar, this.compound, !!r.config.weather);
+    const shortTyre=/^(?:on |the )?(?:softs?|mediums?|hards?|inters?|intermediates?|reds?|yellows?|whites?)(?: please| then)?$/.test(normalized);
+    const completes=clarification&&this.now()<clarification.until&&(clarification.reason==='which-car'?shortCar:shortTyre);
+    const intent = parseIntent(completes ? `${text}, ${clarification.text}` : text, focus?.car || this.recentCar, this.compound, !!r.config.weather);
     if(this.lastTopic&&/^(?:and |what about |how about )(?:theo|nico|car one|car two)\??$/.test(normalized)) {
       const target=parseIntent(text);const n='car' in target&&target.car?target.car:/nico|two/.test(normalized)?2:1;
       this.recentCar=n;this.answer(r,this.lastTopic,n as 1|2);return null;
@@ -1134,11 +1137,11 @@ export class Conversation {
       return null;
     }
     if (intent.kind === 'clarify') {
-      if(intent.reason==='which-car')this.clarification={text,until:this.now()+30000};
+      if(intent.reason==='which-car'||intent.reason==='which-tyre')this.clarification={text,until:this.now()+30000,reason:intent.reason};
       const speaker: Speaker = intent.reason === 'dry' ? 'TYRE SPECIALIST' : intent.car ? DRIVER[intent.car as 1 | 2] : 'STRATEGIST';
       const line = intent.reason === 'which-car' ? 'Which car, Theo or Nico?'
         : intent.reason === 'one-car' ? 'One car at a time, or say “box both” for a double stack.'
-        : intent.reason === 'one-compound' ? 'Which tyre? Softs, mediums or hards?'
+        : intent.reason === 'one-compound' || intent.reason === 'which-tyre' ? 'Which tyre? Softs, mediums or hards?'
           : intent.reason === 'dry' ? 'It’s bone dry out there. Softs, mediums or hards only.'
             : 'One thing at a time. Box, stay out, push or save?';
       this.say(r, speaker, line, { priority: 2, ttl: 15 });

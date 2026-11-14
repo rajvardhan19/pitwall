@@ -1,5 +1,7 @@
 import {recognitionConstructor} from './radio.ts';
 import type {Recognition} from './radio.ts';
+import type {LocalModels} from './local-models.ts';
+import {BASE} from './base.ts';
 export type VoiceState='idle'|'loading'|'requesting'|'listening'|'processing'|'error';
 export type VoiceEngine='local'|'browser';
 export function voiceError(code:string):string {
@@ -31,6 +33,8 @@ export interface VoiceHooks {
 }
 export class VoiceInput {
   engine:VoiceEngine='local';state:VoiceState='idle';ready=false;
+  /** Model files saved on this computer, if the page looked for them. */
+  local:Promise<LocalModels|null>|null=null;
   private hooks:VoiceHooks;private worker:Worker|null=null;
   private pending=new Map<number,{resolve:(text:string)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private serial=0;private generation=0;private native:Recognition|null=null;
@@ -39,7 +43,7 @@ export class VoiceInput {
   constructor(hooks:VoiceHooks){this.hooks=hooks;}
   private setState(state:VoiceState,text:string){this.state=state;this.hooks.state(state,text);}
   private fail(error:unknown){const name=error instanceof Error?error.name:'Error';const detail=error instanceof Error?error.message:String(error);const text=name==='Error'?detail:voiceError(name);this.setState('error',text);this.hooks.error(text);}
-  private request(type:'load'|'transcribe',audio?:Float32Array):Promise<string> {
+  private request(type:'load'|'transcribe',audio?:Float32Array,local?:LocalModels|null):Promise<string> {
     if(!this.worker) {
       this.worker=new Worker(new URL('./speech-worker.ts',import.meta.url),{type:'module'});
       this.worker.onmessage=(event:MessageEvent<{id:number;type:string;progress?:number;file?:string;text?:string;error?:string}>)=>{
@@ -55,7 +59,7 @@ export class VoiceInput {
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>this.resetWorker('Voice processing timed out. Check your connection and try again.'),type==='load'?180000:45000);
       this.pending.set(id,{resolve,reject,timer});
-      this.worker!.postMessage({id,type,audio},audio?[audio.buffer]:[]);
+      this.worker!.postMessage({id,type,audio,local},audio?[audio.buffer]:[]);
     });
   }
   private resetWorker(reason:string) {
@@ -64,15 +68,15 @@ export class VoiceInput {
   }
   async prepare() {
     if(this.ready)return;
-    this.setState('loading','Downloading on-device voice. First use needs a model download; your audio stays on this device.');
-    await this.request('load');this.ready=true;
+    this.setState('loading','Loading speech recognition. Your audio stays on this device.');
+    await this.request('load',undefined,this.local?await this.local:null);this.ready=true;
   }
   async check():Promise<string|null> {
     this.cancel();const generation=this.generation;
     try {
       await this.prepare();if(generation!==this.generation)return null;
       this.setState('processing','Transcribing a built-in radio sample. Microphone is off.');
-      const response=await fetch('/audio/radio-check.wav');if(!response.ok)throw new Error('The radio check sample could not load.');
+      const response=await fetch(`${BASE}audio/radio-check.wav`);if(!response.ok)throw new Error('The radio check sample could not load.');
       const audio=await this.decode(await response.arrayBuffer());
       const text=await this.request('transcribe',audio);if(generation!==this.generation)return null;
       this.setState('idle',`Voice check heard: “${text}” · Ready for your microphone.`);return text;

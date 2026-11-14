@@ -2,6 +2,9 @@ import {KokoroTTS} from 'kokoro-js';
 import {env} from '@huggingface/transformers';
 import {voiceProfile,spokenText} from './radio-profile.ts';
 import {audible} from './radio-audio.ts';
+import {routeToLocal} from './local-models.ts';
+import {BASE} from './base.ts';
+import type {LocalModels} from './local-models.ts';
 env.allowLocalModels=false;
 const MODEL='onnx-community/Kokoro-82M-v1.0-ONNX';
 // Measured in Chrome: q8 on the single-thread WASM runtime renders ~3x slower than real time, so
@@ -10,13 +13,14 @@ const MODEL='onnx-community/Kokoro-82M-v1.0-ONNX';
 const GPU_DTYPE='fp32';
 type Device='webgpu'|'wasm';
 let model:Promise<{tts:KokoroTTS;device:Device}>|null=null;
-const progress=(p:{status:string;progress?:number})=>{if('progress' in p)self.postMessage({type:'progress',progress:p.progress});};
+// Report the weights download only (the tiny config and tokenizer files would make the bar jump back and forth).
+const progress=(p:{status:string;progress?:number;file?:string;loaded?:number;total?:number})=>{if('progress' in p&&/onnx/.test(String(p.file??'')))self.postMessage({type:'progress',file:p.file,loaded:p.loaded,total:p.total,progress:p.progress});};
 // Each loading phase is reported, so the page can tell a slow load from a stalled one.
 const stage=(name:'gpu'|'probe'|'cpu')=>self.postMessage({type:'stage',stage:name});
 function useSelfHostedWasm(){
   if(!env.backends.onnx.wasm)return;
   env.backends.onnx.wasm.numThreads=1;
-  env.backends.onnx.wasm.wasmPaths={mjs:new URL('/voice-runtime/ort-wasm-simd-threaded.mjs',self.location.origin).href,wasm:new URL('/voice-runtime/ort-wasm-simd-threaded.wasm',self.location.origin).href};
+  env.backends.onnx.wasm.wasmPaths={mjs:new URL(`${BASE}voice-runtime/ort-wasm-simd-threaded.mjs`,self.location.origin).href,wasm:new URL(`${BASE}voice-runtime/ort-wasm-simd-threaded.wasm`,self.location.origin).href};
 }
 async function open(prefer:Device){
   if(prefer==='webgpu'){
@@ -44,14 +48,17 @@ function load(prefer:Device){
 // so a reply to the player never waits behind stale lines.
 let chain=Promise.resolve();
 const cancelled=new Set<number>();
-self.onmessage=(event:MessageEvent<{id:number;type:'load'|'speak'|'cancel';text:string;speaker:string;ids?:number[];prefer?:Device}>)=>{
-  const {id,type,text,speaker,ids,prefer}=event.data;
+self.onmessage=(event:MessageEvent<{id:number;type:'load'|'speak'|'cancel';text:string;speaker:string;ids?:number[];prefer?:Device;local?:LocalModels|null}>)=>{
+  const {id,type,text,speaker,ids,prefer,local}=event.data;
   if(type==='cancel'){for(const x of ids??[])cancelled.add(x);return;}
+  // Saved model files load from this computer (npm run models); anything missing still downloads.
+  if(type==='load')routeToLocal(local??null,env,[`${MODEL}/onnx/model_quantized.onnx`,...(prefer==='webgpu'?[`${MODEL}/onnx/model.onnx`]:[])]);
   chain=chain.then(async()=>{
     if(cancelled.delete(id))return;
     try{
       const {tts,device}=await load(prefer??'wasm');
       if(type==='load'){self.postMessage({id,type:'ready',device});return;}
+      self.postMessage({id,type:'begin'});
       const profile=voiceProfile(speaker);
       const result=await tts.generate(spokenText(text),{voice:profile.voice,speed:profile.rate});
       const audio=Float32Array.from(Array.isArray(result.audio)?result.audio[0]:result.audio);

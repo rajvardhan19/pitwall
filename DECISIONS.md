@@ -82,3 +82,50 @@
 - User reported races not starting: the start button sat on "Team radio connected · live reports load on this device". Start waited for the full neural voice load with no limit short of the 4-minute request timeout, and the GPU start-up and voice test sent no progress, so a stalled load looked frozen. The user was running Safari 26.6, which offers WebGPU; the GPU voice path had only been tested in Chrome. Reproduced in Chrome by holding the WebGPU runtime's CDN connection open: the status froze exactly as reported.
 - Fix: the worker reports each loading phase; a 20 s no-progress watchdog on the GPU load restarts the worker on the CPU voices and remembers that per browser (keyed to the user agent, so a browser update retries the GPU). A **Start now** button is offered while connecting. With `textUntilReady`, lines that need the live model stay text until it loads, so a slow load never holds the race; bundled clips still play. The director's default (wait for the model) is unchanged for other callers and tests.
 - Kept: the headset start still waits for the voices by default (Chrome with a cached model starts in ~4 s), so the full-audio experience is unchanged where the GPU path works. Safari's GPU behaviour itself was not tested directly (no Safari automation without enabling remote automation), so the watchdog decides per browser.
+
+## 2026-11-14 — Voices and team chat ready by default
+
+- User asked for the neural voices (and team chat, shown as "Loading…") to be downloaded and loaded by default. Codex had already started both loads on page open. Measured in Chrome: the 1.09 GB team chat weights are cached only after a complete download, so leaving or reloading early restarted it from 0%. Progress also read "Downloading" while loading from the cache, so every visit looked like a download.
+- `npm run dev` now saves the model files to a git-ignored `models/` folder first (`scripts/fetch-models.mjs`, 18 files, 1.4 GB, skipped once present; failures never block the dev server). The dev and preview servers serve them at `/models/` with byte ranges. The workers route Hugging Face URLs for saved files to the local copies, including kokoro-js's hard-coded voice URLs. When every needed file is local they skip the browser cache, so the models are not stored twice. `models/` never enters `dist/`, so a deployed site keeps downloading from Hugging Face.
+- The voices load before team chat, so they don't compete for bandwidth and the GPU. Labels say "Loading … from this computer" or "Loading", not "Downloading".
+- Measured in a brand-new Chrome profile: voices ready in 5.4 s and team chat in 13.5 s, with 0.5 MB written to browser storage. Before this, the first visit downloaded about 1.5 GB.
+- Not saved locally: the q4 team chat build for GPUs without shader-f16 (1.7 GB). Those browsers still download it. The WebGPU ONNX runtime still comes from its CDN and the browser's HTTP cache.
+
+## 2026-11-14 — Radio dropouts and voice input accuracy
+
+- **Radio stopping mid-race.** Could not reproduce headless: Chrome CPU voices for 8 min, Chrome GPU for 4 min, and WebKit (Safari's engine) with GPU voices and team chat replying, with no dropout. Code review found three ways the radio went silent for the rest of a race. (1) A render timeout or worker crash reset the voices, and text-until-ready (added the same day) then dropped every later line, with nothing reloading the model. (2) A broken model (for example, a lost GPU) failed every render without ever being rebuilt. (3) A clip whose `onended` never fired held the radio forever, which happens when Safari suspends or interrupts audio output (device switch, another app). Fixes: renders are timed from when the worker starts them, not while queued. A timeout, crash or two failed renders in a row reload the voices in the background, with text radio in the meantime; a second dropout on the GPU switches to the CPU voices, and after three the radio stops retrying and says so. Each clip has a guard of its length plus 2 s, and suspended or interrupted output is resumed. Every path has a test.
+- **Voice input accuracy.** Benchmarked with 400 synthetic race calls: 25 calls × 8 macOS English voices (US, UK ×2, Indian ×2, Australian, Irish, South African), clean and with pink noise at 10 dB SNR. Each transcript is scored by whether `parseIntent` and `parseAnswer` give the same call as the script. Prompt changes were judged on a second, differently worded set of 25 calls. Results:
+  - Whisper tiny.en as shipped: 52% clean / 26% noisy.
+  - base.en, a larger model: no better (51% / 27%).
+  - A decoder prompt with the radio vocabulary, roster surnames included: 86% / 68%, and 87% / 72% on the held-out set.
+  - Parser fixes: "Ok, do it" was read as a question; "fox", "harts" and "car du" are now repaired.
+  - A "box" whose tyre was misheard now asks "Which tyre?" instead of fitting the default set. Wrong commands executed went from 5% to 2% on the held-out set, and "softs" in reply completes the stop.
+  - Without the rival names in the prompt, overall accuracy was similar, but rival questions dropped from 69% to 28%, so the names stay.
+  - Synthetic voices are a proxy for real players; real accents, microphones and rooms will differ.
+- The Whisper files are now part of `npm run models`, so speech recognition loads from this computer too.
+
+## 2026-11-14 — Stay free: on-device voices for the public site
+
+- The user chose to keep the free, on-device setup for now. Hosted voices (HOSTED_VOICE_PLAN.md) are deferred.
+- Cost estimate kept for when that changes. Usage was measured with the conversation engine at 1×: 190–250 characters of team speech per minute of play, about 10 s of player audio, and up to 1.3 free-form questions. Prices were read from official pages on 2026-11-14.
+  - Budget (OpenAI tts-1, gpt-4o-mini-transcribe, Claude Haiku 5.5): about $0.27 per player-hour.
+  - Deepgram Aura-2 and Nova-3 with Claude Haiku 5.5: about $0.51.
+  - ElevenLabs Flash and Scribe with Claude Sonnet 5.5: about $0.92.
+  - Per-session-minute voice agents (Deepgram Voice Agent, $0.075/min): about $4.50, because they bill silence too.
+  - 40% of synthesized characters repeat word for word, so caching rendered lines would cut the voice bill by at least that much.
+- Verified the production build as a static site on a first visit with no saved models. Voices downloaded from Hugging Face and were ready in 19 s on this connection, speech recognition passed its check, and the race radio spoke. The only hosts contacted were the site, Google Fonts, Hugging Face's CDN and jsDelivr (the WebGPU ONNX runtime). A host that answers unknown paths with the HTML page (as `vite preview` and many static hosts do) is correctly treated as having no local models.
+
+## 2026-11-14 — Team setup required on capable devices; text radio on phones
+
+- The user rejected making team chat opt-in: neural voices and team chat are required on capable devices, with an animation until both are downloaded and set up. Phones and weak devices get text radio plus the recorded team clips.
+- Device check (`src/team-setup.ts`): phones and tablets (including iPads that report a Mac user agent), browsers without a WebGPU adapter or with only a software one, and devices reporting under 4 GB of memory get text radio. Everything else gets the full radio. The player can override with "Load voices and team chat anyway" (remembered per browser) or `?radio=full|lite`.
+- Start lights: five lights fill with combined progress, weighted by download size (voices about 25%, team chat about 75%). Progress counts bytes of the large weight files only, because team chat's 150 KB model graph finishes first and had read as 100%. When the team is ready the lights go out and the start button unlocks. The old "Start now" escape is gone; a failed load offers retry, race with text radio, or race without team chat, so no one is trapped.
+- Text radio downloads nothing: no voice or team chat worker starts (checked in a browser with a forced lite radio and an emulated iPhone). Lines without a recorded clip stay text and never hold the race.
+- Verified in Chrome: full setup from this computer reached ready in about 12 s with the bar rising steadily; text radio and the emulated iPhone started at once; with GPU access disabled and the full radio forced, the voices fell back to the CPU, team chat failed with its reason, and "Race without team chat" unlocked the start.
+
+## 2026-11-14 — Public site on GitHub Pages
+
+- The user asked for a URL to play online. The repository is public, so the game is published free on GitHub Pages at https://rajvardhan19.github.io/F1RaceEngineer/. The Codex-managed private hosting manifest (`.openai/hosting.json`) is unchanged.
+- Pages serves the game under `/F1RaceEngineer/`, so asset paths that assumed the site root (recorded clips, voice-check sample, the voice runtime in both workers, the local-models lookup) now use Vite's base URL (`src/base.ts`). Locally the base is still `/`.
+- `npm run deploy:pages` builds into a temporary folder and force-pushes it to `gh-pages` (a deploy-only branch), leaving `main` and `dist/` alone.
+- Verified the subpath build as a first-time player: lights out after 85 s (1.4 GB from Hugging Face on this connection), voice check passed, ready again after a reload, and a race with voices and a team chat reply; no failed requests or errors.

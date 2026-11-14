@@ -159,3 +159,63 @@ test('with text radio until the voices load, an unvoiced line never holds the ra
   radio.say('Box this lap, Theo. Mediums.','STRATEGIST');
   assert.equal(radio.busy,false);assert.equal(radio.pace(15),15);assert.equal(FakeWorker.last,before);
 });
+test('voices wait for the saved-model lookup and tell the worker which files are on this computer',async()=>{
+  const radio=setup();const statuses:string[]=[];radio.onStatus=t=>statuses.push(t);
+  const files={base:'http://127.0.0.1:5173/models/',files:['onnx-community/Kokoro-82M-v1.0-ONNX/onnx/model_quantized.onnx']};
+  radio.local=Promise.resolve(files);
+  const loading=radio.prepare();await flush();
+  const worker=FakeWorker.last,load=worker.requests.at(-1);
+  assert.equal(load.type,'load');assert.deepEqual(load.local,files);
+  worker.reply({type:'progress',file:'onnx/model.onnx',loaded:163e6,total:326e6,progress:50});assert.equal(statuses.at(-1),'Loading neural voices from this computer · 50%');assert.equal(radio.progress,0.5);
+  worker.reply({id:load.id,type:'ready',device:'wasm'});await loading;assert.equal(radio.ready,true);
+});
+// Mid-race dropouts: the radio must come back on its own, never go silent for the rest of the race.
+async function readyRadio(){
+  const radio=setup();radio.textUntilReady=true;const statuses:string[]=[];radio.onStatus=t=>statuses.push(t);
+  const loading=radio.prepare();const worker=FakeWorker.last;worker.reply({id:worker.requests.at(-1).id,type:'ready',device:'webgpu'});await loading;
+  return {radio,statuses,worker};
+}
+const speakOf=(worker:FakeWorker)=>worker.requests.filter(r=>r.type==='speak').at(-1);
+test('a render that times out mid-race reloads the voices, and the radio comes back',async()=>{
+  const {radio,statuses,worker}=await readyRadio();radio.renderMs=20;let aired=0;radio.onAir=()=>aired++;
+  radio.say('Box this lap.','LAU');await flush();
+  worker.reply({id:speakOf(worker).id,type:'begin'});await wait(50);
+  assert.ok(statuses.some(s=>/Radio dropped out/.test(s)),statuses.join(' | '));
+  const fresh=FakeWorker.last;assert.notEqual(fresh,worker);assert.equal(fresh.requests[0].type,'load');
+  // While the voices reload, lines stay text and never hold the race.
+  radio.say('Gap is two seconds.','DATA ENGINEER');assert.equal(radio.pace(15),15);assert.equal(fresh.requests.length,1);
+  fresh.reply({id:fresh.requests[0].id,type:'ready',device:'webgpu'});await flush();await flush();assert.equal(radio.ready,true);
+  radio.say('Copy, boxing.','LAU');await flush();
+  fresh.reply({id:speakOf(fresh).id,type:'audio',audio:new Float32Array(240),rate:24000});await flush();await flush();
+  assert.equal(aired,1);radio.interrupt();
+});
+test('two failed renders in a row rebuild the voice worker',async()=>{
+  const {radio,statuses,worker}=await readyRadio();
+  radio.say('First.','LAU');await flush();worker.reply({id:speakOf(worker).id,type:'error',error:'GPU device lost'});await flush();await flush();
+  assert.equal(FakeWorker.last,worker);
+  radio.say('Second.','REY');await flush();worker.reply({id:speakOf(worker).id,type:'error',error:'GPU device lost'});await flush();await flush();
+  assert.notEqual(FakeWorker.last,worker);assert.equal(FakeWorker.last.requests[0].type,'load');
+  assert.ok(statuses.some(s=>/reconnecting/.test(s)));
+  const fresh=FakeWorker.last;fresh.reply({id:fresh.requests[0].id,type:'ready',device:'webgpu'});await flush();await flush();
+  assert.equal(radio.ready,true);radio.interrupt();
+});
+test('waiting behind earlier lines is not a render timeout',async()=>{
+  const {radio,worker}=await readyRadio();radio.renderMs=20;let aired=0;radio.onAir=()=>aired++;
+  radio.say('Queued line.','LAU');await flush();await wait(60);
+  assert.equal(FakeWorker.last,worker);
+  worker.reply({id:speakOf(worker).id,type:'begin'});worker.reply({id:speakOf(worker).id,type:'audio',audio:new Float32Array(240),rate:24000});await flush();await flush();
+  assert.equal(aired,1);radio.interrupt();
+});
+test('a clip whose end never arrives does not freeze the radio',async()=>{
+  const {radio,worker}=await readyRadio();radio.playSlackMs=10;const aired:string[]=[];radio.onAir=(_s,t)=>aired.push(t);
+  // The fake output never fires onended on its own: like Safari with paused audio output.
+  radio.say('One.','LAU');radio.say('Two.','REY');await flush();
+  for(const r of worker.requests.filter(r=>r.type==='speak'))worker.reply({id:r.id,type:'audio',audio:new Float32Array(240),rate:24000});
+  await wait(80);await flush();
+  assert.deepEqual(aired.sort(),['One.','Two.']);radio.interrupt();
+});
+test('text radio (phones and weak devices) downloads nothing, and unvoiced lines never hold the race',async()=>{
+  const radio=setup();radio.neural=false;const before=FakeWorker.last;
+  await radio.prepare();await radio.preload();assert.equal(FakeWorker.last,before);assert.equal(radio.ready,false);
+  radio.say('Box this lap, Theo. Mediums.','STRATEGIST');assert.equal(radio.busy,false);assert.equal(radio.pace(15),15);assert.equal(FakeWorker.last,before);
+});

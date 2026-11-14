@@ -2,7 +2,7 @@ import type { Command, Compound } from './sim.ts';
 import { ROSTER } from './roster.ts';
 
 export type Topic = 'tyres' | 'gaps' | 'weather' | 'strategy' | 'laps' | 'position' | 'status' | 'rival' | 'feel' | 'open';
-export type ClarifyReason = 'which-car' | 'one-car' | 'one-action' | 'one-compound' | 'mode' | 'dry';
+export type ClarifyReason = 'which-car' | 'which-tyre' | 'one-car' | 'one-action' | 'one-compound' | 'mode' | 'dry';
 export type Intent =
   | { kind: 'command'; command: Command; cars?: number[] }
   | { kind: 'swap'; car?: number }
@@ -18,7 +18,10 @@ export function normalize(input: string) {
   return input.toLowerCase()
     .replace(/[’']s\b/g, '').replace(/[’']/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
     .replace(/\bcard\b/g, 'car')
-    .replace(/(?<!the )\bcar (?:ii|two|too|to|2|number two|number 2)\b/g, 'car two')
+    // Slips measured on synthetic race calls (8 English voices): none of these words occur in race talk.
+    .replace(/\bfox\b/g, 'box')
+    .replace(/\b(?:harts?|hearts?)\b/g, 'hards')
+    .replace(/(?<!the )\bcar (?:ii|two|too|to|du|tu|2|number two|number 2)\b/g, 'car two')
     .replace(/(?<!the )\bcar (?:i|one|won|1|number one|number 1)\b/g, 'car one')
     .replace(/\b(?:nicko|nikko|niko|nick|nicky|nicholas)\b/g, 'nico')
     .replace(/\b(?:reyez|rayes|reyes)\b/g, 'reyes')
@@ -29,7 +32,7 @@ export function normalize(input: string) {
     .replace(/\b(?:whites?)\b/g, 'hard');
 }
 
-const QUESTION_START = /^(why|explain|how|what|whats|which|should|shall|can|could|when|where|who|whos|is|are|do(?! not)|does|did|will|would|tell me|status|any|update|recommend)\b/;
+const QUESTION_START = /^(why|explain|how|what|whats|which|should|shall|can|could|when|where|who|whos|is|are|do(?! not| it\b)|does|did|will|would|tell me|status|any|update|recommend)\b/;
 // “Can you box this lap?” is a polite order on the radio, not a question.
 const POLITE_ORDER = /^(can|could|will|would) you (box|pit|push|attack|stay|save|conserve|manage|come in|let)\b/;
 
@@ -50,7 +53,7 @@ export function parseIntent(input: string, recentCar?: number, defaultCompound: 
   // Double stacks need explicit wording; “car one and car two box” stays ambiguous by design.
   const both = /\b(both|both cars|double stack|the two of them)\b/.test(text);
 
-  const address = text.replace(/^(?:(?:car one|car two|theo|nico|laurent|reyes|james|maya|eli|guys|team|mate|buddy|ok|okay)\s*)+/, '');
+  const address = text.replace(/^(?:(?:car one|car two|theo|nico|laurent|reyes|james|maya|eli|guys|team|mate|buddy|okay|ok)\b\s*)+/, '');
   const query = !POLITE_ORDER.test(address) && (asked || QUESTION_START.test(address));
 
   // Team orders name both drivers by design: “Theo, let Nico through”.
@@ -113,6 +116,11 @@ export function parseIntent(input: string, recentCar?: number, defaultCompound: 
     const compounds = (['soft', 'medium', 'hard'] as Compound[]).filter(c => new RegExp(`\\b${c}s?\\b`).test(text));
     if (wet && /\binter(s|mediates?)?\b/.test(text)) compounds.push('inter');
     if (compounds.length > 1) return { kind: 'clarify', reason: 'one-compound', text: 'Choose one compound: soft, medium, or hard.', car };
+    // “Box for <something we did not recognise>” is a misheard tyre (“box for harts”, “box, Nico, Faure”):
+    // ask, rather than fit the default set the player did not ask for.
+    const slot = text.match(/\bfor (?:the |some |a set of |new |fresh )?(\w+)/)?.[1];
+    const named = slot && !/^(undercut|overcut|tyres?|tires?|set|stop|win|safety|car|it|now|this|that|next|us|me|him|position|track)$/.test(slot);
+    if (!compounds.length && (named || rival)) return { kind: 'clarify', reason: 'which-tyre', text: 'Box for which tyre: softs, mediums or hards?', car };
     return command({ car: target, action: 'pit', compound: compounds[0] ?? defaultCompound(target) });
   }
   if (push || conserve || balanced) return command({ car: target, action: push ? 'push' : conserve ? 'conserve' : 'balanced' });

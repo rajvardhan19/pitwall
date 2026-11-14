@@ -27,6 +27,12 @@ test('speech-recognition slips and radio phrasing become the intended call',()=>
   assert.equal(parseIntent('Nico, inters this lap').kind,'clarify');
   assert.deepEqual(parseIntent('is Keller pitting?',2),{kind:'question',topic:'rival',car:2,rival:'Keller'});
   assert.equal(parseIntent('how many laps left?').kind,'question');
+  // Transcriber slips from the speech benchmark. A misheard compound must never fit the default tyre.
+  assert.deepEqual(call('Fox Theo for mediums.'),{car:1,action:'pit',compound:'medium',cars:undefined});
+  assert.deepEqual(call('Box Nico for harts.'),{car:2,action:'pit',compound:'hard',cars:undefined});
+  assert.deepEqual(call('Car, Du, push now.'),{car:2,action:'push',cars:undefined});
+  assert.deepEqual(parseIntent("What's Theo's tire life?"),{kind:'question',topic:'tyres',car:1});
+  for(const t of ['Ok, do it.','Okay, do it.','OK, do it.']){assert.equal(parseAnswer(t),'yes',t);assert.notEqual(parseIntent(t).kind,'question',t);assert.notEqual(parseIntent(t).kind,'clarify',t);}
 });
 test('yes and no answers are recognised in radio language',()=>{
   for(const t of ['yes','copy','go for it','okay Nico, go','understood','affirmative','no problem'])assert.equal(parseAnswer(t),'yes',t);
@@ -112,6 +118,13 @@ test('asking about team orders never executes a swap',()=>{
 test('answering a car clarification retains the original instruction',()=>{
   const {r,c}=race();c.hear(r,'box for softs');assert.equal(r.decisions.length,0);c.hear(r,'Nico');
   assert.deepEqual(r.decisions.at(-1)?.command,{car:2,action:'pit',compound:'soft'});
+});
+test('a misheard tyre is asked about, never replaced by the default set',()=>{
+  for(const t of ['Box, Nico, Faure,','Nico, box this lap for songs.','Car two, box for piss off.'])assert.equal((parseIntent(t) as {reason?:string}).reason,'which-tyre',t);
+  // Ordinary ways to call a stop without naming the tyre still go through.
+  for(const t of ['Theo, box for the undercut','Theo, box for new tyres','Theo, box box','Theo, box this lap'])assert.equal(parseIntent(t).kind,'command',t);
+  const {r,c}=race();c.hear(r,'Nico, box this lap for songs');assert.equal(r.decisions.length,0);assert.match(c.lines.at(-1)!.text,/Which tyre\?/);
+  c.hear(r,'softs');assert.deepEqual(r.decisions.at(-1)?.command,{car:2,action:'pit',compound:'soft'});
 });
 test('clarified instructions expire instead of executing a forgotten call',()=>{
   const {r,c,advance}=race();c.hear(r,'box for softs');advance(31000);c.hear(r,'Nico');assert.equal(r.decisions.length,0);

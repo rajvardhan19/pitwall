@@ -11,6 +11,8 @@ npm install
 npm run dev
 ```
 
+The first `npm run dev` saves the voice and team chat models (about 1.5 GB: neural voices, speech recognition and team chat) to `models/` (git-ignored), so the game loads them from this computer in seconds instead of downloading them in the browser. Later runs skip files already saved and make no network requests; `npm run models` does the same on its own, and `PITWALL_SKIP_MODELS=1` skips it. Without saved models (for example on a deployed site), the browser downloads them from Hugging Face on the first visit, as before.
+
 Open the printed local URL. Select **Take the pit wall** to begin. Use 1×, 5×, 15×, or 60× to control simulation speed. Safety-car deployment, restart, and any question the team asks you automatically return to 1×. Switching tabs pauses the session.
 
 ```sh
@@ -18,6 +20,12 @@ npm test       # simulation, conversation, parser, radio and voice regressions
 npm run build # strict TypeScript check and static production bundle
 npm run preview
 ```
+
+## Play online
+
+**https://rajvardhan19.github.io/F1RaceEngineer/** (GitHub Pages). On a desktop browser with GPU access, the first visit downloads the voices and team chat (about 1.4 GB) from Hugging Face behind the start lights; later visits load from the browser's copy. Phones and weak devices get text radio with the recorded team clips.
+
+To publish the current commit: `npm run deploy:pages`. It builds for the `/F1RaceEngineer/` subpath into a temporary folder and pushes it to the `gh-pages` branch, which Pages serves; `main` and the local `dist/` are untouched.
 
 ## Play
 
@@ -122,7 +130,7 @@ In simulated full races with an answering player, voiced lines went from 2.0 to 
 
 ### Live-radio delivery
 
-Headset startup waits for the live voice model, not only the bundled opening clip, but it never traps the player: **Start now** races at once. Until the voices load, only the bundled team clips are voiced and every other line stays text, so nothing holds the race. The loader reports each phase (download, GPU start, voice test, CPU voices). If the GPU path shows no sign of progress for 20 s, the worker restarts on the CPU voices, and that browser goes straight to the CPU voices next time (until its version changes). During generation and spoken turns, the simulation continues at 1×; **Preparing radio · Racing at 1×** distinguishes generation from playback. Voice generation never stops the race; the selected acceleration resumes once the radio is idle. Text-only mode keeps the requested simulation speed. This is a local-model latency accommodation, not hosted real-time speech.
+**Team setup.** On a desktop browser with GPU access, the neural voices and team chat are required. Both load as soon as the page opens, and the first race waits for them. Five start lights fill as they download and set up; the lights go out when the team is ready, and the start button unlocks. If a download fails, the player can retry or race on with text radio (voices) or without team chat. Phones, tablets and devices without usable GPU access (no WebGPU, a software GPU, or under 4 GB of memory) get **text radio**: the team on screen plus the recorded team clips, with nothing large downloaded. **Load voices and team chat anyway** overrides that choice for the browser; `?radio=full` or `?radio=lite` forces either for testing. Until the voices load (or if they drop out), only the bundled team clips are voiced and every other line stays text, so nothing holds the race. The loader reports each phase (download, GPU start, voice test, CPU voices). If the GPU path shows no sign of progress for 20 s, the worker restarts on the CPU voices, and that browser goes straight to the CPU voices next time (until its version changes). During generation and spoken turns, the simulation continues at 1×; **Preparing radio · Racing at 1×** distinguishes generation from playback. Voice generation never stops the race; the selected acceleration resumes once the radio is idle. Text-only mode keeps the requested simulation speed. This is a local-model latency accommodation, not hosted real-time speech.
 
 Reports expire against race time, not a 30-second wall-clock cutoff while synthesis is still running. The director prefetches first sentences and renders the next sentence during playback instead of queueing every sentence in several reports at once. Every generated clip is checked for non-silent audio. Playback failures remain visible with a voice retry action; they do not pause the race. The text log remains available while voices recover. Player interruptions and genuinely stale race facts are still discarded.
 
