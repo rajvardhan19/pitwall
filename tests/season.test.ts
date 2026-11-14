@@ -61,6 +61,22 @@ test('season rounds open with the championship picture on the radio',()=>{
   const r=createRace(seasonSetup(s)!);r.status='running';const c=new Conversation(r);c.start(r);
   assert.match(c.lines[0].text,/Round 2, Chinese Grand Prix\. Theo is P\d+ in the championship.*Lights out!/);
 });
+test('season grids have no phantom lap or immediate pit stop at lights out',()=>{
+  for(const round of CALENDAR_2026){
+    const setup=seasonSetup(newSeason('full',99),round)!;
+    const r=createRace(setup);
+    assert(r.cars.every(c=>c.distance>=0&&c.distance<0.1),round.circuit);
+    assert.deepEqual(order(r).map(c=>c.id),qualifying(setup));
+    r.status='running';
+    applyCommand(r,{car:1,action:'pit',compound:'hard'});
+    for(let t=0;t<40;t++)step(r);
+    assert(r.cars.every(c=>c.lapTimes.length===0),`${round.circuit}: no phantom lap`);
+    assert.equal(playerCar(r,1)!.stops,0,`${round.circuit}: stop waits for a full lap`);
+    while(playerCar(r,1)!.stops===0&&r.elapsed<200)step(r);
+    assert.equal(playerCar(r,1)!.stops,1);
+    assert(playerCar(r,1)!.lapTimes[0]>40);
+  }
+});
 test('every rival on the grid can be asked about by name',()=>{
   assert.deepEqual(parseIntent('is Okafor pitting?',1),{kind:'question',topic:'rival',car:1,rival:'Okafor'});
   assert.deepEqual(parseIntent('where is Varga?',2),{kind:'question',topic:'rival',car:2,rival:'Varga'});

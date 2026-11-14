@@ -62,9 +62,9 @@ export class RadioVoice {
   private cache=new Map<string,Clip>();
   /** Something is on air or waiting to be. */
   get busy(){return this.speaking||this.queue.length>0;}
-  /** Hold the race while rendering; do not let accelerated time expire an unheard turn. */
+  /** Slow to real time while rendering; speech generation must never stop the race. */
   get buffering(){return this.busy&&this.source===null;}
-  pace(requested:number){return !this.enabled?requested:this.blocked||this.buffering?0:this.busy?1:requested;}
+  pace(requested:number){return !this.enabled?requested:this.blocked?0:this.busy?1:requested;}
 
   unlock(){
     if(!this.context)this.context=new AudioContext();
@@ -204,7 +204,7 @@ export class RadioVoice {
     let item=this.queue[0];if(!item)return;
     this.speaking=true;this.current=item;const generation=this.generation;
     try{
-      this.onStatus(`Preparing ${voiceProfile(item.speaker).short??item.speaker}’s radio · race clock waiting`);
+      this.onStatus(`Preparing ${voiceProfile(item.speaker).short??item.speaker}’s radio · race continues at 1×`);
       // Wait for the head's first sentence. If a more urgent line was queued meanwhile, it goes first.
       let clip=await item.parts[0].clip!;
       for(;;){

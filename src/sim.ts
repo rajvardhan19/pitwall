@@ -50,14 +50,14 @@ function setupOf(input: RaceSetup | number | undefined): RaceSetup {
 export function createRace(input?: RaceSetup | number): Race {
   const setup = setupOf(input), config = buildConfig(setup), grid = buildGrid(setup, config);
   // Full races start from a grid just behind the line, so nobody completes a phantom lap at the start.
-  const offset = setup.mode === 'full' ? Math.max(...grid.map(g => g.gap)) / config.lapTime : 0;
+  const offset = config.startLap === 0 ? Math.max(...grid.map(g => g.gap)) / config.lapTime : 0;
   const cars: Car[] = grid.map((entry): Car => {
     const d = ROSTER[entry.id], distance = config.startLap + offset - entry.gap / config.lapTime;
     return {
       id:d.id,name:d.name,code:d.code,team:d.team,color:d.color,player:d.id===1||d.id===4,distance,
       pace: config.basePace + driverPace(setup, d.id) + (entry.pace ?? 0),
       compound:entry.compound,age:entry.age,wear:entry.age/(TYRES[entry.compound].life/config.wear),mode:'balanced',pitOrder:null,pitRemaining:0,stops:0,
-      lastLap:config.lapTime + 1.2 + d.id*0.16,lapStarted:setup.mode==='full'?0:-entry.gap,lapTimes:[],trust:78,finishedAt:null,sector:Math.floor(distance*3),shownDistance:distance,
+      lastLap:config.lapTime + 1.2 + d.id*0.16,lapStarted:config.startLap===0?0:-entry.gap,lapTimes:[],trust:78,finishedAt:null,sector:Math.floor(distance*3),shownDistance:distance,
       yieldTo:null,yieldUntil:0,
     };
   }).sort((a,b)=>a.id-b.id);

@@ -86,15 +86,19 @@ test('a silent GPU render is detected so the radio falls back to the CPU voice',
   const {audible}=await import('../src/radio-audio.ts');
   assert.equal(audible(new Float32Array(24000)),false);assert.equal(audible(new Float32Array(24000).fill(.05)),true);
 });
-test('headset pace holds while rendering, then plays at real time, restoring acceleration when idle',async()=>{
+test('headset keeps racing at real time during synthesis and playback, restoring acceleration when idle',async()=>{
   const radio=setup();assert.equal(radio.pace(60),60);
-  radio.say('Live report.','DATA ENGINEER');assert.equal(radio.pace(60),0);
+  radio.say('Live report.','DATA ENGINEER');assert.equal(radio.pace(60),1);
   const worker=FakeWorker.last;worker.reply({id:worker.requests[0].id,type:'ready'});await flush();
+  assert.equal(radio.buffering,true);
+  let elapsed=0; for(let second=0;second<45;second++)elapsed+=radio.pace(60);
+  assert.equal(elapsed,45,'an unresponsive renderer cannot freeze the simulation');
+  radio.blocked=true;assert.equal(radio.pace(60),0,'microphone capture still holds the race');radio.blocked=false;
   worker.reply({id:worker.requests.at(-1).id,type:'audio',audio:new Float32Array(24000),rate:24000});await flush();
   assert.equal(radio.pace(60),1);(radio as any).source.stop();await flush();assert.equal(radio.pace(60),60);
   radio.enabled=false;radio.blocked=true;assert.equal(radio.pace(60),60);
 });
-test('slow generation does not erase an unheard report while the race clock waits',async()=>{
+test('wall time alone does not erase a still-relevant report',async()=>{
   const radio=setup();const original=Date.now;let wall=0;Date.now=()=>wall;
   try{let aired=0;radio.onAir=()=>aired++;radio.say('Still relevant.','LAU');const worker=FakeWorker.last;
     worker.reply({id:worker.requests[0].id,type:'ready'});await flush();wall=45000;

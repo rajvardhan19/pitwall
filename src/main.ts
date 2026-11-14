@@ -350,7 +350,7 @@ $('#play').onclick=()=>{if(race.status==='finished'){showDebrief();return;}if(ra
 $('#guide').onclick=()=>{guided=!guided;$('#guide').textContent=guided?'Hints on':'Hints off';$('#hint').hidden=!guided;document.body.classList.toggle('hints-off',!guided);};
 function setAudio(enabled:boolean){voice.enabled=enabled;sound.setEnabled(enabled);$('#sound').textContent=enabled?'Audio on':'Audio off';$('#sound').setAttribute('aria-pressed',String(enabled));if(!enabled)interruptRadio();else voice.unlock();}
 $('#sound').onclick=()=>{setAudio(!voice.enabled);if(voice.enabled)voice.prepare().then(()=>voice.say('Radio check. Pit wall online.','DATA ENGINEER')).catch(()=>{/* status shows the failure */});};
-voice.onStatus=(text,error=false)=>{$('#radio-status').textContent=text;$('#radio-status').classList.toggle('voice-error',error);if(error&&voice.enabled&&race.status==='running'){race.status='paused';accumulator=0;}const button=document.querySelector('#start-session');if(button instanceof HTMLButtonElement&&button.disabled)button.textContent=text;};
+voice.onStatus=(text,error=false)=>{$('#radio-status').textContent=error?`${text} Race continues; use Load & hear voice to retry.`:text;$('#radio-status').classList.toggle('voice-error',error);const button=document.querySelector('#start-session');if(button instanceof HTMLButtonElement&&button.disabled)button.textContent=text;};
 $('#radio-preview').onclick=async()=>{
   const button=$<HTMLButtonElement>('#radio-preview');button.disabled=true;
   if(race.status==='running')race.status='paused';
@@ -422,7 +422,7 @@ function showTransmission(speaker:string,text:string){
 function renderRaceStory(){
   const sorted=order(race),car=playerCar(race,selected)!;
   const remaining=race.config.totalLaps-Math.floor(sorted[0].distance),wet=wetness(race);
-  const scenario=scenarioById(race.config.setup.scenario),full=race.config.setup.mode==='full';
+  const scenario=scenarioById(race.config.setup.scenario),full=race.config.setup.mode!=='scenario';
   $('#race-headline').textContent=race.status==='finished'?'CHEQUERED FLAG':race.flag==='safety'?'THE WINDOW IS OPEN':wet>0.3?'RAIN FALLING':remaining<=5?'BRING IT HOME':car.pitRemaining?'EVERY SECOND COUNTS':full?raceTitle(race.config.setup).headline:scenario.headline;
   $('#race-stakes').textContent=race.flag==='safety'?'Safety car deployed. Lower pit loss. The field is closing up.':wet>0.3?'Inters or slicks: the crossover decides this race.':car.pitRemaining?`${car.code} in the pit lane · ${car.pitRemaining}s remaining`:remaining<=5?`${remaining} laps left. Make the tyres count.`:full?`${race.config.totalLaps} laps. Two cars. One strategy.`:scenario.stakes;
   $('#live-battles').innerHTML=race.cars.filter(c=>c.player).map(c=>{const position=sorted.indexOf(c)+1;const ahead=sorted[position-2];const gap=ahead?Math.max(0,(ahead.distance-c.distance)*lapPace(c,race)).toFixed(1):'0.0';return `<div class="battle-card ${c.id===1?'theo':'nico'}"><span>${c.id===1?'01 / THEO':'02 / NICO'}</span><b>P${position}</b><small>${c.finishedAt!==null?'FINISHED':c.pitRemaining?'IN PIT LANE · '+c.pitRemaining+'s':c.pitOrder?'BOX THIS LAP':ahead?'↗ '+gap+'s TO '+ahead.code:'LEADING THE RACE'}</small></div>`;}).join('');
@@ -450,7 +450,7 @@ function frame(now:number) {
     }
   }
   convo.tick(race);
-  if(now-lastRender>200){render();if(race.status==='running'&&voice.enabled&&voice.busy)$('#flag').textContent=voice.buffering?'◌ PREPARING TEAM RADIO':'● TEAM RADIO · 1×';lastRender=now;}
+  if(now-lastRender>200){render();if(race.status==='running'&&voice.enabled&&voice.busy)$('#flag').textContent=voice.buffering?'◌ PREPARING RADIO · RACING AT 1×':'● TEAM RADIO · 1×';lastRender=now;}
   requestAnimationFrame(frame);
 }
 renderChrome();render();showBriefing();requestAnimationFrame(frame);
