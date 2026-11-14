@@ -1,4 +1,5 @@
 import type { Command, Compound } from './sim.ts';
+import { ROSTER } from './roster.ts';
 
 export type Topic = 'tyres' | 'gaps' | 'weather' | 'strategy' | 'laps' | 'position' | 'status' | 'rival' | 'feel' | 'open';
 export type ClarifyReason = 'which-car' | 'one-car' | 'one-action' | 'one-compound' | 'mode' | 'dry';
@@ -9,7 +10,8 @@ export type Intent =
   | { kind: 'clarify'; reason: ClarifyReason; text: string; car?: number }
   | { kind: 'unknown'; car?: number };
 
-const RIVALS = ['voss', 'vega', 'keller', 'sato', 'costa', 'ward', 'moreau', 'rossi'];
+// Every rival on the grid, by surname: “is Keller pitting?”, “where’s Okafor?”.
+const RIVALS = ROSTER.filter(d => d.id !== 1 && d.id !== 4).map(d => d.name.split(' ').slice(1).join(' ').toLowerCase());
 
 /** Lower-case, strip punctuation and repair common speech-recognition slips for radio vocabulary. */
 export function normalize(input: string) {
@@ -41,7 +43,7 @@ export function parseAnswer(input: string): 'yes' | 'no' | null {
   return null;
 }
 
-export function parseIntent(input: string, recentCar?: number, defaultCompound: (car: number) => Compound = () => 'medium'): Intent {
+export function parseIntent(input: string, recentCar?: number, defaultCompound: (car: number) => Compound = () => 'medium', wet = false): Intent {
   const text = normalize(input);
   const asked = input.trim().endsWith('?');
   const one = /\b(car one|theo|laurent)\b/.test(text), two = /\b(car two|nico|reyes)\b/.test(text);
@@ -66,7 +68,8 @@ export function parseIntent(input: string, recentCar?: number, defaultCompound: 
   const car = one ? 1 : two ? 2 : recentCar;
 
   if (/\b(weather|rain|forecast)\b/.test(text)) return { kind: 'question', topic: 'weather', car: car ?? 1 };
-  if (/\b(inter|inters|intermediates?|wets?|full wets?)\b/.test(text)) return { kind: 'clarify', reason: 'dry', text: 'It’s dry. Softs, mediums or hards only.', car };
+  if (!wet && /\b(inter|inters|intermediates?|wets?|full wets?)\b/.test(text)) return { kind: 'clarify', reason: 'dry', text: 'It’s dry. Softs, mediums or hards only.', car };
+  if (wet && /\b(full wets?|wets)\b/.test(text)) return { kind: 'clarify', reason: 'dry', text: 'Inters only today. It isn’t wet enough for full wets.', car };
 
   const rival = RIVALS.find(name => new RegExp(`\\b${name}\\b`).test(text));
   if (query) {
@@ -108,6 +111,7 @@ export function parseIntent(input: string, recentCar?: number, defaultCompound: 
   if (stay) return command({ car: target, action: 'stay' });
   if (pit) {
     const compounds = (['soft', 'medium', 'hard'] as Compound[]).filter(c => new RegExp(`\\b${c}s?\\b`).test(text));
+    if (wet && /\binter(s|mediates?)?\b/.test(text)) compounds.push('inter');
     if (compounds.length > 1) return { kind: 'clarify', reason: 'one-compound', text: 'Choose one compound: soft, medium, or hard.', car };
     return command({ car: target, action: 'pit', compound: compounds[0] ?? defaultCompound(target) });
   }

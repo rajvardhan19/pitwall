@@ -1,10 +1,10 @@
 // Prompt construction and output cleanup for the optional in-browser language model.
 // The model only talks. It never proposes or executes race calls: in testing, small
 // in-browser models mapped plain questions to the wrong command too often to be trusted.
-import { playerCar, TOTAL_LAPS } from './sim.ts';
+import { playerCar, wetness } from './sim.ts';
 import type { Race } from './sim.ts';
 import {
-  callName, currentLap, firstName, gapAhead, gapBehind, lapsRemaining, OBJECTIVE, positionOf, seconds, teammate, tyreLife, tyresReachFinish,
+  callName, currentLap, firstName, gapAhead, gapBehind, lapsRemaining, positionOf, seconds, targetPhrase, teammate, trackState, tyreLife, tyresReachFinish,
 } from './race-view.ts';
 
 export type BrainSpeaker = 'LAU' | 'REY' | 'STRATEGIST' | 'TYRE SPECIALIST' | 'DATA ENGINEER';
@@ -44,12 +44,12 @@ export function raceFacts(r: Race, number: 1 | 2, speaker: BrainSpeaker): string
   const pos = positionOf(r, car);
   const ahead = gapAhead(r, car), behind = gapBehind(r, car);
   const facts = [
-    `Lap ${currentLap(r)} of ${TOTAL_LAPS}, ${lapsRemaining(car)} laps to go. ${r.flag === 'safety' ? 'The safety car is out.' : 'Green flag.'}`,
+    `Lap ${currentLap(r)} of ${r.config.totalLaps}, ${lapsRemaining(car, r)} laps to go. ${r.flag === 'safety' ? 'The safety car is out.' : 'Green flag.'}${r.config.weather ? ` Track is ${trackState(r).toLowerCase()}${wetness(r) > 0.3 ? ', inters weather' : ''}.` : ''}`,
     car.finishedAt !== null ? `${who} finished in P${pos}.` : `${who} P${pos}.${ahead ? ` ${callName(ahead.car)} is ${seconds(ahead.seconds)} seconds ahead.` : ' Leading the race.'}${behind ? ` ${callName(behind.car)} is ${seconds(behind.seconds)} seconds behind.` : ''}`,
-    car.pitRemaining > 0 ? `${who} in the pit lane right now.` : `${whose} tyres: ${car.compound}s, ${Math.floor(car.age)} laps old, ${tyreLife(car)}% life left. ${tyresReachFinish(car) ? 'They should last to the finish.' : 'They will not last to the finish.'}`,
+    car.pitRemaining > 0 ? `${who} in the pit lane right now.` : `${whose} tyres: ${car.compound}s, ${Math.floor(car.age)} laps old, ${tyreLife(car)}% life left. ${tyresReachFinish(car, r) ? 'They should last to the finish.' : 'They will not last to the finish.'}`,
     `${whose} pace mode: ${car.mode === 'balanced' ? 'normal' : car.mode}. Pit stops made: ${car.stops}.${car.pitOrder ? ` A stop for ${car.pitOrder}s is planned this lap.` : ''}`,
     `${you ? 'Your teammate' : 'Teammate'} ${firstName(mate)} is P${positionOf(r, mate)}.`,
-    `${you ? 'Your target' : `${firstName(car)}’s target`}: top ${OBJECTIVE[number]}.`,
+    `${you ? 'Your target' : `${firstName(car)}’s target`}: ${targetPhrase(r, number).goal}.`,
   ];
   return facts;
 }

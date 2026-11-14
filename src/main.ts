@@ -1,5 +1,10 @@
 import './style.css';
-import { createRace, step, order, playerCar, lapPace, formatTime, TYRES, TOTAL_LAPS, START_LAP, pitForecast } from './sim.ts';
+import { createRace, step, order, playerCar, lapPace, formatTime, TYRES, SLICKS, pitForecast, pitLoss, wetness } from './sim.ts';
+import { SCENARIOS, CIRCUITS, CALENDAR_2026, DEFAULT_SETUP, scenarioById, circuitOf, fullRaceLaps, objectiveLabel, raceTitle, roundOf, ROSTER, pathOf } from './scenarios.ts';
+import { newSeason, nextRound, seasonOver, seasonSetup, standings, recordRace, simulateRound, loadSeason, saveSeason } from './season.ts';
+import type { Season } from './season.ts';
+import type { RaceSetup, Objective, Distance } from './scenarios.ts';
+import { onTarget, positionOf, trackState } from './race-view.ts';
 import type { Car, Compound, Command } from './sim.ts';
 import {parseIntent} from './intent.ts';
 import {RadioVoice, voiceProfile} from './radio.ts';
@@ -12,10 +17,24 @@ import {TeamBrain, BRAIN_MODEL} from './brain.ts';
 import {raceFacts} from './brain-prompt.ts';
 import type {DebriefAnalysis,Result} from './analysis.ts';
 
-let race=createRace();let speed=1;let selected=1;let lastLine=0;let accumulator=0;let lastFrame=performance.now();
+// The player's chosen race is remembered between visits. Full races get a fresh seed each time.
+const SETUP_KEY='pitwall.setup';
+const newSeed=()=>Math.floor(Math.random()*900000)+100000;
+let season:Season|null=loadSeason();
+let seasonDraft={distance:'half' as Distance,start:{1:'medium',2:'medium'} as {1:Compound;2:Compound}};
+function loadSetup():RaceSetup{
+  try{
+    const saved=JSON.parse(localStorage.getItem(SETUP_KEY)??'null');
+    if(saved?.mode==='season')return (season&&seasonSetup(season))||{...DEFAULT_SETUP,mode:'season'};
+    if(saved&&(saved.mode==='full'?CIRCUITS[saved.circuit??saved.scenario]:SCENARIOS.some(x=>x.id===saved.scenario)))return {...DEFAULT_SETUP,...saved,seed:saved.mode==='full'?newSeed():scenarioById(saved.scenario).seed};
+  }catch{/* first visit */}
+  return DEFAULT_SETUP;
+}
+let setup=loadSetup();
+let race=createRace(setup);let speed=1;let selected=1;let lastLine=0;let accumulator=0;let lastFrame=performance.now();
 let guided=true;let briefing=true;let debrief=false;let finishedWall=0;let comparison:DebriefAnalysis|null=null;let analysisWorker:Worker|null=null;let analysisProgress='';let inspectedDriver=1;let lastAirTime=0;let onAir=false;let thinking:BrainCall|null=null;
 const airedLines=new Set<number>();
-const voice=new RadioVoice();const sound=new PitwallSound();const brain=new TeamBrain();
+const voice=new RadioVoice();voice.textUntilReady=true;const sound=new PitwallSound();const brain=new TeamBrain();
 const nextTyre:Record<number,Compound>={1:'medium',2:'medium'};
 let convo=newConversation();
 function newConversation(){
@@ -28,18 +47,18 @@ function newConversation(){
 }
 voice.clock=()=>race.elapsed;
 const app=document.querySelector<HTMLDivElement>('#app')!;
-const track='M 88 162 L 195 79 Q 220 59 244 67 L 305 90 Q 320 95 328 78 L 347 41 Q 355 29 369 39 L 407 74 Q 422 88 408 104 L 382 134 Q 367 152 387 164 L 432 193 Q 448 205 431 218 L 390 248 Q 377 257 366 244 L 338 210 Q 331 200 317 208 L 289 225 Q 273 236 260 223 L 224 188 Q 215 179 203 192 L 167 232 Q 151 250 137 236 L 86 190 Q 72 177 88 162 Z';
+const trackPath=()=>pathOf(circuitOf(race.config.setup));
 const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 app.innerHTML=`
-<header class="topbar"><a class="brand" href="./" aria-label="Pitwall home"><span class="brand-mark">∕∕</span> PITWALL<span class="brand-sub">RACE ENGINEER</span></a><div class="session-name"><span class="live-dot"></span> BARCELONA <span class="muted">/</span> THE LONG GAME</div><div class="header-actions"><button id="focus" class="subtle" aria-pressed="false">Race view</button><button id="guide" class="subtle">Hints on</button><button id="sound" class="subtle" aria-pressed="false">Audio off</button><button id="brief" class="icon-button" aria-label="Scenario briefing">?</button></div></header>
-<main><section class="sessionbar"><div><div class="eyebrow">SCENARIO 01 <span>·</span> STRATEGY SIMULATION</div><h1>Your call. Their race.</h1></div><div class="race-status"><div id="flag" class="flag">● GREEN FLAG</div><div class="lap-counter">LAP <strong id="lap">19</strong><span>/ 36</span></div><div class="playback"><button id="play" class="play" aria-label="Start race">▶</button><div class="speeds" aria-label="Simulation speed">${[1,5,15,60].map(n=>`<button data-speed="${n}" class="${n===1?'active':''}" aria-pressed="${n===1}">${n}×</button>`).join('')}</div></div></div></section>
-<section class="race-director"><span class="director-label"><i></i> LIVE FROM THE PIT WALL</span><strong id="race-headline">THE LONG GAME</strong><span id="race-stakes">A podium to protect. A second car ready to attack.</span></section><div class="dashboard"><aside class="panel timing"><div class="panel-head"><h2>Timing tower</h2><span class="tiny">TO LEADER</span></div><div class="timing-labels"><span>POS / DRIVER</span><span>GAP</span><span>TYRE</span></div><div id="tower"></div><div class="tower-footer"><span class="live-dot"></span> Sector updates <span id="clock">00:00</span></div><div class="objective"><span class="eyebrow">YOUR OBJECTIVE</span><h3>Two cars. One team.</h3><p>Keep Theo on the podium.<br>Bring Nico into the top five.</p><div class="objective-line"><span>01 / LAURENT</span><b>TOP 3</b></div><div class="objective-line"><span>02 / REYES</span><b>TOP 5</b></div></div></aside>
-<section class="center-column"><div class="panel circuit-panel"><div class="panel-head"><h2>Circuit de Barcelona</h2><span class="tag">LIVE TRACK</span></div><div class="circuit-meta"><span>4.657 <small>KM</small></span><span>14 <small>TURNS</small></span><span>DRY <small>TRACK</small></span></div><div class="circuit-wrap"><div class="circuit-watermark">BARCELONA<span>RACE // 01</span></div><div class="sector-label sector-one">SECTOR 1</div><div class="sector-label sector-two">SECTOR 2</div><div class="sector-label sector-three">SECTOR 3</div><svg id="track" viewBox="40 5 440 275" role="img" aria-label="Schematic circuit map with live car positions"><path d="${track}" class="track-shadow"/><path id="track-path" d="${track}" class="track-line"/><path d="M 125 117 L 138 132" stroke="#e8eee6" stroke-width="5"/><g id="car-trails"></g><g id="car-markers"></g></svg><div class="track-caption">NUMBER = DRIVER · COLOR = CONSTRUCTOR</div></div><div id="map-legend" class="map-legend" aria-label="Constructor colors and driver numbers"></div><div id="map-driver" class="map-driver" aria-live="polite"></div><div id="live-battles" class="live-battles"></div><div class="conditions"><div><span class="eyebrow">TRACK TEMP</span><strong>38°<small>C</small></strong></div><div><span class="eyebrow">AIR TEMP</span><strong>24°<small>C</small></strong></div><div><span class="eyebrow">RAIN CHANCE</span><strong>10<small>%</small></strong></div><div><span class="eyebrow">FORECAST</span><strong class="forecast">Dry to finish <span>80% confidence</span></strong></div></div></div>
+<header class="topbar"><a class="brand" href="./" aria-label="Pitwall home"><span class="brand-mark">∕∕</span> PITWALL<span class="brand-sub">RACE ENGINEER</span></a><div class="session-name" id="session-name"></div><div class="header-actions"><button id="focus" class="subtle" aria-pressed="false">Race view</button><button id="guide" class="subtle">Hints on</button><button id="sound" class="subtle" aria-pressed="false">Audio off</button><button id="brief" class="icon-button" aria-label="Scenario briefing">?</button></div></header>
+<main><section class="sessionbar"><div><div class="eyebrow" id="session-kicker"></div><h1>Your call. Their race.</h1></div><div class="race-status"><div id="flag" class="flag">● GREEN FLAG</div><div class="lap-counter">LAP <strong id="lap">1</strong><span id="lap-total"></span></div><div class="playback"><button id="play" class="play" aria-label="Start race">▶</button><div class="speeds" aria-label="Simulation speed">${[1,5,15,60].map(n=>`<button data-speed="${n}" class="${n===1?'active':''}" aria-pressed="${n===1}">${n}×</button>`).join('')}</div></div></div></section>
+<section class="race-director"><span class="director-label"><i></i> LIVE FROM THE PIT WALL</span><strong id="race-headline"></strong><span id="race-stakes"></span></section><div class="dashboard"><aside class="panel timing"><div class="panel-head"><h2>Timing tower</h2><span class="tiny">TO LEADER</span></div><div class="timing-labels"><span>POS / DRIVER</span><span>GAP</span><span>TYRE</span></div><div id="tower"></div><div class="tower-footer"><span class="live-dot"></span> Sector updates <span id="clock">00:00</span></div><div class="objective" id="objective"></div></aside>
+<section class="center-column"><div class="panel circuit-panel"><div class="panel-head"><h2 id="circuit-name"></h2><span class="tag">LIVE TRACK</span></div><div class="circuit-meta" id="circuit-meta"></div><div class="circuit-wrap"><div class="circuit-watermark" id="circuit-watermark"></div><div class="sector-label sector-one">SECTOR 1</div><div class="sector-label sector-two">SECTOR 2</div><div class="sector-label sector-three">SECTOR 3</div><svg id="track" viewBox="40 5 440 275" role="img" aria-label="Schematic circuit map with live car positions"><path id="track-shadow" class="track-shadow"/><path id="track-path" class="track-line"/><path id="start-line" stroke="#e8eee6" stroke-width="5"/><g id="car-trails"></g><g id="car-markers"></g></svg><div class="track-caption">NUMBER = DRIVER · COLOR = CONSTRUCTOR</div></div><div id="map-legend" class="map-legend" aria-label="Constructor colors and driver numbers"></div><div id="map-driver" class="map-driver" aria-live="polite"></div><div id="live-battles" class="live-battles"></div><div class="conditions" id="conditions"></div></div>
 <div class="car-grid" id="cars"></div>
 <div class="panel pace-panel"><div class="panel-head"><h2>Race pace</h2><div class="legend"><span>● LAU</span><span>● REY</span><small>COMPLETED LAPS</small></div></div><div id="pace"></div></div></section>
 <aside class="right-column"><div class="panel strategy"><div class="panel-head"><h2>Strategy desk</h2><span class="tiny">APEX</span></div><div class="strategy-tabs"><button data-select="1" class="active">01 LAURENT</button><button data-select="2">02 REYES</button></div><div id="strategy"></div></div><div class="panel radio-panel"><div class="panel-head"><h2>Team radio</h2><span class="tag radio-tag">● ONLINE</span></div><div id="messages" role="log" aria-label="Team radio messages"></div><div class="radio-hint" id="hint">Answer the team: “yes”, “no”, “box both”. Call: “Nico, box for softs”.</div></div></aside></div>
 <section class="on-air-panel" aria-label="Current team transmission"><div class="speaker-avatar" id="speaker-avatar">PW</div><div class="transmission"><div><span id="speaker-label">PIT WALL · STANDING BY</span><span id="transmission-state">RADIO LINK</span></div><p id="subtitle">The team is waiting for your call.</p><div id="question" class="question-bar" hidden><span id="question-prompt"></span><span id="question-timer" aria-live="off"></span><div id="question-options" role="group" aria-label="Quick replies"></div></div></div><div class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></section><section class="voice-console"><div class="voice-setup"><label for="radio-cast">TEAM VOICES</label><select id="radio-cast"><option value="LAU">Theo · measured</option><option value="REY">Nico · energetic</option><option value="STRATEGIST">James · strategy</option><option value="TYRE SPECIALIST">Maya · tyres</option><option value="DATA ENGINEER">Eli · data</option><option value="RACE CONTROL">Race control</option><option value="PIT CREW">Pit crew</option></select><button id="radio-preview">Load &amp; hear voice</button><span id="radio-status" role="status" aria-live="polite">Local neural voices · first download ~90 MB · no subscription</span></div><div class="voice-setup"><label for="voice-engine">VOICE INPUT</label><select id="voice-engine"><option value="local">On-device voice</option><option value="browser">Browser speech service</option></select><button id="voice-check">Run voice check</button><span class="voice-privacy">First use downloads a speech model. On-device audio is never uploaded.</span></div><div class="voice-setup"><label for="brain-enable">TEAM CHAT AI</label><button id="brain-enable">Enable team chat</button><span id="brain-status" role="status" aria-live="polite">Optional: drivers and engineers answer free-form questions in character. Needs WebGPU. One-time download, ${BRAIN_MODEL.size}; runs on this device. Race calls never depend on it.</span></div><div class="voice-feedback"><span id="voice-state">READY</span><div class="mic-meter" aria-label="Microphone input level"><i id="mic-level"></i></div><span id="voice-detail" role="status" aria-live="polite">Hold Space to talk; release to send. Or click Talk, then Finish.</span><button id="voice-cancel" hidden>Cancel</button></div></section><section class="command-bar"><div class="radio-symbol">⌁</div><div class="command-title"><strong>YOU HAVE THE RADIO</strong><span id="mic-status">Type a call or use your microphone</span></div><form id="command-form"><label class="sr-only" for="command">Radio command</label><input id="command" autocomplete="off" placeholder='“Car two, box for mediums”'><button type="submit" aria-label="Send radio command">↵</button></form><button id="mic" class="mic-button">◉ <span>Talk · R</span></button></section>
-<footer><span>APEX MOTORSPORT <span class="muted">/ ENGINEERING STATION 01</span></span><span>SYNTHETIC SCENARIO · SEED 2049 <span class="footer-dot">●</span> LOCAL SIMULATION</span></footer></main>
+<footer><span>APEX MOTORSPORT <span class="muted">/ ENGINEERING STATION 01</span></span><span id="footer-race"></span></footer></main>
 <dialog id="modal"></dialog>`;
 function setHTML(selector:string,html:string) {
   const el=document.querySelector<HTMLElement>(selector)!;
@@ -57,13 +76,42 @@ function carPanel(car:Car,num:number) {
   const pos=timingOrder().findIndex(c=>c.id===car.id)+1;const tyre=TYRES[car.compound];
   return `<article class="panel car-panel ${selected===num?'selected':''}"><div class="driver-heading"><span class="driver-number">0${num}</span><div><span class="eyebrow">${num===1?'THE VETERAN':'THE HOTSHOT'}</span><h2>${car.name}</h2></div><strong class="position">P${pos}</strong></div><div class="tyre-line"><span class="compound" style="--tyre:${tyre.color}">${car.compound[0].toUpperCase()}</span><span>${car.compound.toUpperCase()} <small>${Math.floor(car.age)} laps old</small></span><div class="tyre-health"><strong>${Math.max(0,Math.round((1-car.wear)*100))}%</strong><small>TYRE LIFE</small></div></div><div class="wear-track"><div style="width:${Math.max(0,(1-car.wear)*100)}%;background:${car.wear>0.78?'#ed6d73':tyre.color}"></div><i></i></div><div class="car-stats"><div><span>LAST LAP</span><strong>${formatTime(car.lastLap)}</strong></div><div><span>PACE MODE</span><strong>${car.mode}</strong></div><div><span>STOPS</span><strong>${car.stops}</strong></div></div><div class="car-actions"><button data-car="${num}" data-action="pit" class="box-button" ${car.finishedAt!==null?'disabled':''}>${car.pitRemaining?'PIT · '+car.pitRemaining+'s':car.pitOrder?'BOX · '+car.pitOrder.toUpperCase():'BOX THIS LAP'}</button><button data-car="${num}" data-action="stay">Stay out</button><button data-car="${num}" data-action="${car.mode==='push'?'conserve':'push'}">${car.mode==='push'?'Conserve':'Push'} ↗</button></div></article>`;
 }
+function objectiveSentence(name:string,ob:Objective){
+  if(ob.kind==='beat')return `Finish ${name} ahead of ${ROSTER[ob.rival].name.split(' ')[1]}.`;
+  return ob.max===1?`Win with ${name}.`:ob.max===3?`${name} on the podium.`:`${name} in the top ${ob.max}.`;
+}
+/** Everything on the dashboard that depends on which race was chosen. */
+function renderChrome(){
+  const cfg=race.config,circuit=circuitOf(cfg.setup),title=raceTitle(cfg.setup);
+  $('#session-name').innerHTML=`<span class="live-dot"></span> ${esc(circuit.city.toUpperCase())} <span class="muted">/</span> ${esc(title.title.toUpperCase())}`;
+  $('#session-kicker').innerHTML=`${esc(title.kicker)} <span>·</span> STRATEGY SIMULATION`;
+  $('#lap-total').textContent=`/ ${cfg.totalLaps}`;
+  $('#objective').innerHTML=`<span class="eyebrow">YOUR OBJECTIVE</span><h3>Two cars. One team.</h3><p>${objectiveSentence('Theo',cfg.objectives[1])}<br>${objectiveSentence('Nico',cfg.objectives[2])}</p><div class="objective-line"><span>01 / LAURENT</span><b>${objectiveLabel(cfg.objectives[1])}</b></div><div class="objective-line"><span>02 / REYES</span><b>${objectiveLabel(cfg.objectives[2])}</b></div>`;
+  $('#circuit-name').textContent=circuit.name;
+  $('#circuit-watermark').innerHTML=`${esc(circuit.city.toUpperCase())}<span>${esc(title.kicker)}</span>`;
+  const path=$<SVGPathElement&HTMLElement>('#track-path');path.setAttribute('d',pathOf(circuit));$('#track-shadow').setAttribute('d',pathOf(circuit));
+  // Start/finish line: a short stroke across the track where the path begins.
+  const a=path.getPointAtLength(0),b=path.getPointAtLength(6),dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,nx=-dy/len*8,ny=dx/len*8;
+  $('#start-line').setAttribute('d',`M ${a.x-nx} ${a.y-ny} L ${a.x+nx} ${a.y+ny}`);
+  $('#footer-race').innerHTML=`${esc(title.kicker)} · SEED ${race.seed} <span class="footer-dot">●</span> LOCAL SIMULATION`;
+  renderConditions();
+}
+function renderConditions(){
+  const cfg=race.config,circuit=circuitOf(cfg.setup),scenario=scenarioById(cfg.setup.scenario);
+  const rain=cfg.setup.mode==='scenario'?scenario.forecast.rainChance:Math.round(circuit.rainChance*100);
+  const forecast=cfg.setup.mode==='scenario'?scenario.forecast:{text:circuit.rainChance?'Showers possible':'Dry to finish',confidence:circuit.rainChance?'changeable':'stable'};
+  const state=trackState(race);
+  setHTML('#circuit-meta',`<span>${circuit.km} <small>KM</small></span><span>${circuit.turns} <small>TURNS</small></span><span>${state} <small>TRACK</small></span>`);
+  setHTML('#conditions',`<div><span class="eyebrow">TRACK TEMP</span><strong>${circuit.trackTemp-(wetness(race)>0.05?10:0)}°<small>C</small></strong></div><div><span class="eyebrow">AIR TEMP</span><strong>${circuit.airTemp}°<small>C</small></strong></div><div><span class="eyebrow">${state==='DRY'?'RAIN CHANCE':'TRACK'}</span><strong>${state==='DRY'?`${rain}<small>%</small>`:esc(state)}</strong></div><div><span class="eyebrow">FORECAST</span><strong class="forecast">${esc(forecast.text)} <span>${esc(forecast.confidence)}</span></strong></div>`);
+}
 function radioLine(l:Line){
   const who=l.speaker==='YOU'?'YOU · RACE ENGINEER':l.speaker==='RADIO'?'PIT WALL':voiceProfile(l.speaker).short;
   return `<div class="radio-message ${l.kind}" data-radio-id="${l.id}" data-aired="${airedLines.has(l.id)}"><div><strong>${esc(who)}</strong><time>${Math.floor(l.at/60)}:${(l.at%60).toString().padStart(2,'0')}</time></div><p>${esc(l.text)}</p></div>`;
 }
 function render() {
   const sorted=timingOrder();const leader=sorted[0];
-  $('#lap').textContent=String(Math.min(TOTAL_LAPS,Math.floor(order(race)[0].distance)+1));
+  $('#lap').textContent=String(Math.min(race.config.totalLaps,Math.floor(order(race)[0].distance)+1));
+  renderConditions();
   $('#flag').className='flag '+(race.flag==='safety'?'yellow':'');
   $('#flag').textContent=race.status==='finished'?'⚑ CHEQUERED FLAG':race.status==='paused'?'Ⅱ SESSION PAUSED':race.status==='ready'?'● READY TO RACE':race.flag==='safety'?'● SAFETY CAR':'● GREEN FLAG';
   $('#play').textContent=race.status==='running'?'Ⅱ':'▶';$('#play').setAttribute('aria-label',race.status==='finished'?'Open race debrief':race.status==='running'?'Pause race':'Resume race');
@@ -72,7 +120,8 @@ function render() {
   sound.update(race.status==='running',race.flag==='safety',playerCar(race,selected)!.distance);
   renderRaceStory();
   $('#clock').textContent=`${Math.floor(race.elapsed/60).toString().padStart(2,'0')}:${(race.elapsed%60).toString().padStart(2,'0')}`;
-  $('#tower').innerHTML=sorted.map((car,i)=>`<div class="timing-row ${car.player?'our-car':''}"><span class="rank">${i+1}</span><span class="team-line" style="background:${car.color}"></span><div class="timing-name"><strong>${car.code}</strong><small>${car.team}</small></div><span class="gap">${car.finishedAt!==null?'FIN':car.pitRemaining?'PIT':i===0?'LEADER':'+'+Math.max(0,(leader.shownDistance-car.shownDistance)*86).toFixed(1)}</span><span class="tyre-dot" style="color:${TYRES[car.compound].color}">${car.compound[0].toUpperCase()}</span></div>`).join('');
+  $('#tower').classList.toggle('full-field',race.cars.length>12);
+  $('#tower').innerHTML=sorted.map((car,i)=>`<div class="timing-row ${car.player?'our-car':''}"><span class="rank">${i+1}</span><span class="team-line" style="background:${car.color}"></span><div class="timing-name"><strong>${car.code}</strong><small>${car.team}</small></div><span class="gap">${car.finishedAt!==null?'FIN':car.pitRemaining?'PIT':i===0?'LEADER':'+'+Math.max(0,(leader.shownDistance-car.shownDistance)*race.config.lapTime).toFixed(1)}</span><span class="tyre-dot" style="color:${TYRES[car.compound].color}">${car.compound[0].toUpperCase()}</span></div>`).join('');
   setHTML('#cars',race.cars.filter(c=>c.player).map((c,i)=>carPanel(c,i+1)).join(''));
   const path=$<SVGPathElement & HTMLElement>('#track-path');const length=path.getTotalLength();
   const markers=layoutMarkers(race.cars,f=>path.getPointAtLength(f*length));
@@ -85,6 +134,7 @@ function render() {
   const inspected=race.cars.find(c=>c.id===inspectedDriver)!;
   $('#map-driver').innerHTML=`<span style="color:${inspected.color}">●</span><b>${driverNumber(inspected)} ${inspected.name}</b><span>${inspected.team}</span><strong>P${order(race).findIndex(c=>c.id===inspected.id)+1}</strong><span>${inspected.compound.toUpperCase()} · ${Math.floor(inspected.age)} LAPS</span>`;
   renderStrategy();renderPace();renderRadio();renderQuestion();
+  if(race.status==='finished'&&season&&race.config.setup.mode==='season'){const recorded=recordRace(season,race);if(recorded!==season){season=recorded;saveSeason(season);}}
   if(race.status==='finished'&&!debrief){
     // Let the drivers hear their result before the debrief covers the wall.
     finishedWall||=performance.now();
@@ -118,17 +168,18 @@ function renderQuestion(){
   }
 }
 function renderStrategy() {
-  const c=playerCar(race,selected)!;const remain=Math.ceil(TOTAL_LAPS-c.distance);const forecast=pitForecast(race,c);
+  const c=playerCar(race,selected)!;const remain=Math.ceil(race.config.totalLaps-c.distance);const forecast=pitForecast(race,c);
   if(c.finishedAt!==null){setHTML('#strategy',`<div class="strategy-callout"><div class="eyebrow">CHEQUERED FLAG</div><h3>Car home. Job done.</h3><p>${c.name} finishes P${order(race).findIndex(x=>x.id===c.id)+1}. Open the debrief using the play control.</p></div>`);return;}
   document.querySelectorAll<HTMLButtonElement>('[data-select]').forEach(b=>{b.classList.toggle('active',Number(b.dataset.select)===selected);b.setAttribute('aria-pressed',String(Number(b.dataset.select)===selected));});
-  setHTML('#strategy',`<div class="strategy-callout"><div class="eyebrow">${c.pitOrder?'PIT CALL CONFIRMED':c.wear>0.78?'PIT WINDOW OPEN':'ENGINEER’S OUTLOOK'}</div><h3>${c.pitOrder?'Box for '+c.pitOrder+'s':c.wear>0.78?'Fresh tyres. Fresh options.':'Keep the long game in mind.'}</h3><p>${c.pitRemaining?'Crew working. '+c.pitRemaining+' seconds of pit-lane loss remaining.':race.flag==='safety'?'The field is bunching up. Pit loss is lower now; watch for a double stack.':c.wear>0.78?'Degradation is costing lap time. A fresh set may recover the pit loss.':'Pit now and rejoin around P'+forecast.position+'. That forecast assumes the field holds its current pace.'}</p></div><div class="strategy-metrics"><div><span>Est. pit loss</span><strong>${race.flag==='safety'?'12.2':'21.0'}s</strong></div><div><span>Projected pit exit</span><strong>P${forecast.position} · ${forecast.ahead}</strong></div><div><span>Laps remaining</span><strong>${remain}</strong></div><div><span>Current pace estimate</span><strong>${formatTime(lapPace(c,race))}</strong></div></div><div class="compound-heading">NEXT STOP COMPOUND</div><div class="compound-options">${(['soft','medium','hard'] as Compound[]).map(t=>`<button data-compound="${t}" class="${nextTyre[selected]===t?'active':''}" style="--tyre:${TYRES[t].color}" aria-pressed="${nextTyre[selected]===t}"><b>${t[0].toUpperCase()}</b>${t}</button>`).join('')}</div><button class="strategy-box" data-car="${selected}" data-action="pit">${c.pitOrder?'UPDATE PIT CALL':'CALL '+c.code+' INTO THE BOX'} <span>↗</span></button><div class="mode-controls"><button data-car="${selected}" data-action="balanced">Normal pace</button><button data-car="${selected}" data-action="conserve">Conserve tyres</button></div>`);
+  setHTML('#strategy',`<div class="strategy-callout"><div class="eyebrow">${c.pitOrder?'PIT CALL CONFIRMED':c.wear>0.78?'PIT WINDOW OPEN':'ENGINEER’S OUTLOOK'}</div><h3>${c.pitOrder?'Box for '+c.pitOrder+'s':c.wear>0.78?'Fresh tyres. Fresh options.':'Keep the long game in mind.'}</h3><p>${c.pitRemaining?'Crew working. '+c.pitRemaining+' seconds of pit-lane loss remaining.':race.flag==='safety'?'The field is bunching up. Pit loss is lower now; watch for a double stack.':c.wear>0.78?'Degradation is costing lap time. A fresh set may recover the pit loss.':'Pit now and rejoin around P'+forecast.position+'. That forecast assumes the field holds its current pace.'}</p></div><div class="strategy-metrics"><div><span>Est. pit loss</span><strong>${pitLoss(race).toFixed(1)}s</strong></div><div><span>Projected pit exit</span><strong>P${forecast.position} · ${forecast.ahead}</strong></div><div><span>Laps remaining</span><strong>${remain}</strong></div><div><span>Current pace estimate</span><strong>${formatTime(lapPace(c,race))}</strong></div></div><div class="compound-heading">NEXT STOP COMPOUND</div><div class="compound-options">${(race.config.weather?[...SLICKS,'inter' as Compound]:SLICKS).map(t=>`<button data-compound="${t}" class="${nextTyre[selected]===t?'active':''}" style="--tyre:${TYRES[t].color}" aria-pressed="${nextTyre[selected]===t}"><b>${t[0].toUpperCase()}</b>${t}</button>`).join('')}</div><button class="strategy-box" data-car="${selected}" data-action="pit">${c.pitOrder?'UPDATE PIT CALL':'CALL '+c.code+' INTO THE BOX'} <span>↗</span></button><div class="mode-controls"><button data-car="${selected}" data-action="balanced">Normal pace</button><button data-car="${selected}" data-action="conserve">Conserve tyres</button></div>`);
 }
 function renderPace() {
   const a=playerCar(race,1)!,b=playerCar(race,2)!;const times=[...a.lapTimes,...b.lapTimes];
   if(!times.length) {$('#pace').innerHTML='<div class="chart-empty"><div class="chart-grid"></div><span>Telemetry appears after your first complete lap</span></div>';return;}
   const min=Math.floor(Math.min(...times)-2),max=Math.ceil(Math.max(...times)+2);const y=(v:number)=>100-(v-min)/(max-min)*76;
-  const series=(c:Car,color:string)=>`<polyline fill="none" stroke="${color}" stroke-width="2" points="${c.lapTimes.map((v,i)=>`${38+i/(TOTAL_LAPS-START_LAP-1)*510},${y(v)}`).join(' ')}"/>${c.lapTimes.map((v,i)=>`<circle cx="${38+i/(TOTAL_LAPS-START_LAP-1)*510}" cy="${y(v)}" r="2.5" fill="${color}"/>`).join('')}`;
-  $('#pace').innerHTML=`<svg viewBox="0 0 570 125" role="img" aria-label="Completed lap times for Laurent and Reyes">${[min,(min+max)/2,max].map(v=>`<line x1="38" y1="${y(v)}" x2="550" y2="${y(v)}" stroke="#29332d" stroke-dasharray="3 5"/><text x="0" y="${y(v)+3}" fill="#88988b" font-size="9">${v.toFixed(0)}s</text>`).join('')}${series(a,'#c4f17b')}${series(b,'#8fb8dc')}<text x="38" y="119" fill="#88988b" font-size="9">L20</text><text x="530" y="119" fill="#88988b" font-size="9">L36</text></svg>`;
+  const span=Math.max(1,race.config.totalLaps-race.config.startLap-1),x=(i:number)=>38+i/span*510;
+  const series=(c:Car,color:string)=>`<polyline fill="none" stroke="${color}" stroke-width="2" points="${c.lapTimes.map((v,i)=>`${x(i)},${y(v)}`).join(' ')}"/>${c.lapTimes.map((v,i)=>`<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="${color}"/>`).join('')}`;
+  $('#pace').innerHTML=`<svg viewBox="0 0 570 125" role="img" aria-label="Completed lap times for Laurent and Reyes">${[min,(min+max)/2,max].map(v=>`<line x1="38" y1="${y(v)}" x2="550" y2="${y(v)}" stroke="#29332d" stroke-dasharray="3 5"/><text x="0" y="${y(v)+3}" fill="#88988b" font-size="9">${v.toFixed(0)}s</text>`).join('')}${series(a,'#c4f17b')}${series(b,'#8fb8dc')}<text x="38" y="119" fill="#88988b" font-size="9">L${race.config.startLap+1}</text><text x="530" y="119" fill="#88988b" font-size="9">L${race.config.totalLaps}</text></svg>`;
 }
 function interruptRadio(){thinking=null;brain.cancelReplies();voice.interrupt();}
 /** Dashboard buttons: same acknowledgement path as radio calls. */
@@ -157,18 +208,107 @@ function askBrain(call:BrainCall){
 function beginRace(){
   race.status='running';convo.start(race);
 }
+const INSTRUCTIONS=`<div class="brief-instructions"><p><b>You run the strategy.</b> Pick a compound, call a pit stop, and manage each driver’s pace. The team talks to you: drivers ask to push or box, and your strategist brings decisions when the race turns. Answer “yes” or “no”, use the quick replies, or give your own call: “car two, box for mediums”, “Theo, let Nico through”. The race slows to 1× when someone needs an answer.</p><p><b>Replay fairly.</b> The same race and seed with the same calls always produce the same result. After the flag, compare with a sensible default engineer and see what each call was worth.</p></div>`;
+function headsetHTML(){return `<label class="brief-audio"><input type="checkbox" id="brief-audio" ${race.status==='ready'||voice.enabled?'checked':''}> Headset on · local neural voices, radio cues & race ambience</label>`;}
+/** Switch to another race while the picker is open: rebuild the race behind the modal. */
+function choose(next:RaceSetup){
+  setup=next;try{localStorage.setItem(SETUP_KEY,JSON.stringify({scenario:next.scenario,mode:next.mode,circuit:next.circuit,distance:next.distance,start:next.start}));}catch{/* private mode */}
+  reset(false);showBriefing();
+}
+const tyreSelect=(n:1|2,value:Compound,attr:string)=>`<select ${attr}="${n}" aria-label="${n===1?'Theo':'Nico'} starting tyre">${SLICKS.map(t=>`<option value="${t}" ${value===t?'selected':''}>${t}</option>`).join('')}</select>`;
+function seasonHTML(){
+  if(!season){
+    return `<p class="modal-intro">All ${CALENDAR_2026.length} rounds of the 2026 calendar as full races against a fictional 22-driver grid. Drivers’ and constructors’ standings are saved in this browser. Race the rounds you care about and simulate the rest.</p><div class="full-options"><div class="segmented" role="group" aria-label="Season race distance">${(['sprint','half','full'] as Distance[]).map(d=>`<button data-season-distance="${d}" class="${seasonDraft.distance===d?'active':''}" aria-pressed="${seasonDraft.distance===d}">${d==='sprint'?'Sprint races':d==='half'?'Half distance':'Full distance'}</button>`).join('')}</div><label>Theo starts on ${tyreSelect(1,seasonDraft.start[1],'data-season-start')}</label><label>Nico starts on ${tyreSelect(2,seasonDraft.start[2],'data-season-start')}</label></div><button id="season-new" class="primary">START THE 2026 SEASON <span>↗</span></button>`;
+  }
+  const next=nextRound(season),table=standings(season);
+  const pos=(id:number)=>table.drivers.findIndex(d=>d.id===id)+1;
+  const name=(id:number)=>ROSTER[id].name;
+  const driverRows=table.drivers.filter((d,i)=>i<10||d.id===1||d.id===4).map(d=>`<tr class="${d.id===1||d.id===4?'ours':''}"><td>${pos(d.id)}</td><td><span class="team-dot" style="background:${ROSTER[d.id].color}"></span>${esc(name(d.id))}</td><td>${d.wins}</td><td>${d.points}</td></tr>`).join('');
+  const teamRows=table.teams.map((t,i)=>`<tr class="${t.team==='Apex'?'ours':''}"><td>${i+1}</td><td><span class="team-dot" style="background:${t.color}"></span>${esc(t.team)}</td><td>${t.points}</td></tr>`).join('');
+  const calendar=CALENDAR_2026.map(r=>{const res=season!.results.find(x=>x.round===r.round);const current=next?.round===r.round;
+    const detail=res?`${ROSTER[res.order[0]].code} won · LAU P${res.order.indexOf(1)+1} · REY P${res.order.indexOf(4)+1}${res.simulated?' · sim':''}`:current?'NEXT':r.date;
+    return `<li class="${current?'next':res?'done':''}"><b>R${r.round}</b><span>${esc(r.gp.replace(' Grand Prix',''))}</span><small>${esc(detail)}</small></li>`;}).join('');
+  const champion=seasonOver(season)?table.drivers[0]:null;
+  const head=next
+    ?`<h3 class="season-next">Round ${next.round} of ${CALENDAR_2026.length} · ${esc(next.gp)}</h3><p class="modal-intro">${esc(CIRCUITS[next.circuit].name)}, ${esc(CIRCUITS[next.circuit].country)} · ${esc(next.date)} · ${fullRaceLaps(CIRCUITS[next.circuit],season.distance)} laps${next.note?` · ${esc(next.note)}`:''}. ${season.results.length?`Theo is P${pos(1)} and Nico P${pos(4)} in the championship; Apex is P${table.teams.findIndex(t=>t.team==='Apex')+1} in the constructors’.`:'The season starts here: everyone on zero points.'}</p>`
+    :`<h3 class="season-next">Season complete</h3><p class="modal-intro">${esc(name(champion!.id))} is the 2026 champion with ${champion!.points} points. Theo finished P${pos(1)}, Nico P${pos(4)}, and Apex P${table.teams.findIndex(t=>t.team==='Apex')+1} in the constructors’.</p>`;
+  return `${head}<div class="season-grid"><div><span class="eyebrow">DRIVERS</span><table class="standings"><tbody>${driverRows}</tbody></table></div><div><span class="eyebrow">CONSTRUCTORS</span><table class="standings"><tbody>${teamRows}</tbody></table></div><div><span class="eyebrow">CALENDAR</span><ol class="season-calendar">${calendar}</ol></div></div><div class="debrief-actions">${next?`<button id="season-sim" class="secondary">Simulate round ${next.round}</button>`:''}<button id="season-abandon" class="secondary">${next?'Abandon season':'Start a new season'}</button></div>`;
+}
+function pickerHTML(){
+  const mode=setup.mode,circuit=circuitOf(setup),scenario=scenarioById(setup.scenario);
+  const tab=(m:RaceSetup['mode'],label:string)=>`<button data-pick-mode="${m}" class="${mode===m?'active':''}" aria-pressed="${mode===m}">${label}</button>`;
+  const grid=[1,2].map(n=>positionOf(race,playerCar(race,n)!));
+  let body='';
+  if(mode==='scenario'){
+    body=`<div class="race-cards">${SCENARIOS.map(x=>`<button class="race-card ${x.id===scenario.id?'selected':''}" data-pick-scenario="${x.id}" aria-pressed="${x.id===scenario.id}"><span class="card-kicker">${x.number} · ${esc(CIRCUITS[x.circuit].city.toUpperCase())}</span><b>${esc(x.title)}</b><p>${esc(x.summary)}</p><span class="card-goals">THEO ${objectiveLabel(x.objectives[1])} · NICO ${objectiveLabel(x.objectives[2])}</span></button>`).join('')}</div><p class="modal-intro">${esc(scenario.intro)}</p><div class="brief-grid"><div><b>01 / THEO LAURENT</b><p>${esc(scenario.theo)}</p></div><div><b>02 / NICO REYES</b><p>${esc(scenario.nico)}</p></div></div>`;
+  }else if(mode==='full'){
+    body=`<div class="circuit-chips">${CALENDAR_2026.map(r=>{const c=CIRCUITS[r.circuit];return `<button class="circuit-chip ${c.id===circuit.id?'selected':''}" data-pick-circuit="${c.id}" aria-pressed="${c.id===circuit.id}"><b>${esc(c.city)}</b><small>${c.laps} laps${c.rainChance>=0.3?' · rain':''}${c.overtake>=1.2?' · no passing':''}</small></button>`;}).join('')}</div><div class="full-options"><div class="segmented" role="group" aria-label="Race distance">${(['sprint','half','full'] as Distance[]).map(d=>`<button data-pick-distance="${d}" class="${setup.distance===d?'active':''}" aria-pressed="${setup.distance===d}">${d==='sprint'?'Sprint':d==='half'?'Half':'Full'} · ${fullRaceLaps(circuit,d)} laps</button>`).join('')}</div><label>Theo starts on ${tyreSelect(1,setup.start?.[1]??'medium','data-pick-start')}</label><label>Nico starts on ${tyreSelect(2,setup.start?.[2]??'medium','data-pick-start')}</label><span class="seed">Seed ${race.seed} <button data-pick-seed>New seed</button></span></div><div class="brief-grid"><div><b>01 / THEO LAURENT</b><p>Qualified P${grid[0]} of ${race.cars.length}. Target: ${objectiveLabel(race.config.objectives[1]).toLowerCase()}.</p></div><div><b>02 / NICO REYES</b><p>Qualified P${grid[1]} of ${race.cars.length}. Target: ${objectiveLabel(race.config.objectives[2]).toLowerCase()}.</p></div></div><p class="modal-intro">${esc(circuit.name)}. Lights out from the grid with the full field. Safety cars${circuit.rainChance?' and rain':''} depend on the seed, so a replay with the same seed is the same race. At 1× this race takes about ${Math.round(race.config.totalLaps*circuit.lapTime/60)} minutes; use 5×–60× and the team will slow you down when they need you.</p>`;
+  }else body=seasonHTML();
+  const startable=mode!=='season'||(!!season&&!seasonOver(season));
+  const label=mode==='season'&&season?`RACE ROUND ${nextRound(season)?.round} <span>↗</span>`:'TAKE THE PIT WALL <span>↗</span>';
+  return `<div class="modal-kicker">PITWALL / CHOOSE YOUR RACE</div><h2>Take the pit wall.</h2><div class="race-mode" role="group" aria-label="Race type">${tab('scenario',`Scenarios · ${SCENARIOS.length}`)}${tab('full','Full race')}${tab('season','Season 2026')}</div>${body}${INSTRUCTIONS}${headsetHTML()}<div class="scenario-note">Fictional teams and drivers · Real 2026 venues and calendar · Synthetic pace data · Schematic circuits<br>Prototype: simplified strategy physics, no historical result claims.</div>${startable?`<button id="start-session" class="primary">${label}</button>`:''}`;
+}
+function briefHTML(){
+  const cfg=race.config,scenario=scenarioById(cfg.setup.scenario),title=raceTitle(cfg.setup),full=cfg.setup.mode!=='scenario';
+  const intro=full?`${cfg.totalLaps} laps at ${esc(circuitOf(cfg.setup).name)}. Seed ${race.seed}.${cfg.setup.brief?` ${esc(cfg.setup.brief.replace(/ Lights out!$/,''))}`:''}`:esc(scenario.intro);
+  return `<div class="modal-kicker">PITWALL / ${esc(title.kicker)}</div><h2>${esc(title.title)}.</h2><p class="modal-intro">${intro}</p>${full?'':`<div class="brief-grid"><div><b>01 / THEO LAURENT</b><p>${esc(scenario.theo)}</p></div><div><b>02 / NICO REYES</b><p>${esc(scenario.nico)}</p></div></div>`}${INSTRUCTIONS}${headsetHTML()}<div class="debrief-actions"><button id="change-race" class="secondary">Choose another race</button><button id="start-session" class="primary">BACK TO THE PIT WALL <span>↗</span></button></div>`;
+}
 function showBriefing() {
   const modal=$<HTMLDialogElement>('#modal');modal.classList.remove('debrief-modal');
-  modal.innerHTML=`<div class="modal-kicker">PITWALL / SCENARIO 01</div><h2>The long game.</h2><p class="modal-intro">Barcelona. Eighteen laps left. Two drivers relying on your next call.</p><div class="brief-grid"><div><b>01 / THEO LAURENT</b><p>P2 on ageing mediums. A measured veteran with a podium to protect.</p></div><div><b>02 / NICO REYES</b><p>P5 on softs approaching the cliff. Quick, impatient, and ready to attack.</p></div></div><div class="brief-instructions"><p><b>You run the strategy.</b> Pick a compound, call a pit stop, and manage each driver’s pace. A safety car may change the equation.</p><p><b>The team talks to you.</b> Drivers ask to push or box; your strategist asks for decisions when the race turns. Answer “yes” or “no”, use the quick replies, or give your own call: “car two, box for mediums”, “Theo, let Nico through”, “how are car one’s tyres?”. The race slows to 1× when someone needs an answer. With the headset on, the clock waits while a voice is prepared and runs at 1× while the team speaks.</p><p><b>Replay fairly.</b> The same seed and decisions always produce the same result. After the race, compare with a sensible default engineer, explore your calls one lap earlier or later, and see the best strategy found in a bounded search.</p></div><label class="brief-audio"><input type="checkbox" id="brief-audio" ${race.status==='ready'||voice.enabled?'checked':''}> Headset on · local neural voices, radio cues & race ambience</label><div class="scenario-note">Fictional teams · Synthetic pace data · Schematic circuit<br>Prototype: dry conditions, simplified strategy physics, no historical result claims.</div><button id="start-session" class="primary">${race.status==='ready'?'TAKE THE PIT WALL':'BACK TO THE PIT WALL'} <span>↗</span></button>`;
+  const picking=race.status==='ready';
+  modal.classList.toggle('picker-modal',picking);
+  modal.innerHTML=picking?pickerHTML():briefHTML();
   if(!modal.open)modal.showModal();
-  $('#start-session').onclick=async()=>{const starting=race.status==='ready';setAudio($<HTMLInputElement>('#brief-audio').checked);if(voice.enabled&&!voice.ready){const button=$<HTMLButtonElement>('#start-session');button.disabled=true;button.textContent='CONNECTING TEAM RADIO…';try{await voice.connect();}catch{button.disabled=false;button.textContent='RETRY HEADSET · or uncheck Headset to play muted';return;}button.disabled=false;}modal.close();briefing=false;if(starting)beginRace();lastFrame=performance.now();render();};
+  const on=<T extends HTMLElement>(sel:string,fn:(el:T)=>void)=>modal.querySelectorAll<T>(sel).forEach(fn);
+  if(picking){
+    on<HTMLButtonElement>('[data-pick-mode]',b=>b.onclick=()=>{
+      const mode=b.dataset.pickMode as RaceSetup['mode'];if(mode===setup.mode)return;
+      if(mode==='season')choose((season&&seasonSetup(season))||{...setup,mode:'season',round:undefined,brief:undefined});
+      else if(mode==='full')choose({...setup,mode,circuit:circuitOf(setup).id,round:undefined,brief:undefined,seed:newSeed()});
+      else choose({...setup,mode,scenario:SCENARIOS.some(x=>x.id===setup.scenario)?setup.scenario:SCENARIOS[0].id,round:undefined,brief:undefined,seed:scenarioById(setup.scenario).seed});
+    });
+    on<HTMLButtonElement>('[data-pick-scenario]',b=>b.onclick=()=>choose({...setup,scenario:b.dataset.pickScenario!,seed:scenarioById(b.dataset.pickScenario!).seed}));
+    on<HTMLButtonElement>('[data-pick-circuit]',b=>b.onclick=()=>choose({...setup,circuit:b.dataset.pickCircuit!,seed:newSeed()}));
+    on<HTMLButtonElement>('[data-pick-distance]',b=>b.onclick=()=>choose({...setup,distance:b.dataset.pickDistance as Distance}));
+    on<HTMLSelectElement>('[data-pick-start]',sel=>sel.onchange=()=>{const start={1:setup.start?.[1]??'medium',2:setup.start?.[2]??'medium'} as {1:Compound;2:Compound};start[Number(sel.dataset.pickStart) as 1|2]=sel.value as Compound;choose({...setup,start});});
+    modal.querySelector<HTMLButtonElement>('[data-pick-seed]')?.addEventListener('click',()=>choose({...setup,seed:newSeed()}));
+    // Season controls.
+    on<HTMLButtonElement>('[data-season-distance]',b=>b.onclick=()=>{seasonDraft.distance=b.dataset.seasonDistance as Distance;showBriefing();});
+    on<HTMLSelectElement>('[data-season-start]',sel=>sel.onchange=()=>{seasonDraft.start[Number(sel.dataset.seasonStart) as 1|2]=sel.value as Compound;});
+    modal.querySelector<HTMLButtonElement>('#season-new')?.addEventListener('click',()=>{season=newSeason(seasonDraft.distance,newSeed(),{...seasonDraft.start});saveSeason(season);choose(seasonSetup(season)!);});
+    modal.querySelector<HTMLButtonElement>('#season-sim')?.addEventListener('click',()=>{season=simulateRound(season!).season;saveSeason(season);choose(seasonSetup(season)??{...setup});});
+    modal.querySelector<HTMLButtonElement>('#season-abandon')?.addEventListener('click',()=>{if(!seasonOver(season!)&&!confirm('Abandon this season? Its standings will be deleted.'))return;season=null;saveSeason(null);choose({...setup,mode:'season',round:undefined,brief:undefined});});
+  }else $('#change-race').onclick=()=>{modal.close();reset(true,true);};
+  modal.querySelector<HTMLButtonElement>('#start-session')?.addEventListener('click',async()=>{const starting=race.status==='ready';setAudio($<HTMLInputElement>('#brief-audio').checked);if(voice.enabled&&!voice.ready){
+    const button=$<HTMLButtonElement>('#start-session');button.disabled=true;button.textContent='CONNECTING TEAM RADIO…';
+    // Wait for the live voices, but never trap the player here: Start now races with text radio
+    // and the voices join as soon as they load.
+    const connecting=voice.connect();connecting.catch(()=>{});
+    let skip=()=>{};const skipped=new Promise<'skip'>(resolve=>{skip=()=>resolve('skip');});
+    const now=document.createElement('button');now.type='button';now.className='secondary start-now';now.textContent='Start now · text radio until the voices load';now.onclick=skip;button.after(now);
+    const outcome=await Promise.race([connecting.then(()=>'ready' as const,()=>'failed' as const),skipped]);
+    now.remove();button.disabled=false;
+    if(outcome==='failed'){button.textContent='RETRY HEADSET · or uncheck Headset to play muted';return;}
+  }modal.close();modal.classList.remove('picker-modal');briefing=false;if(starting)beginRace();lastFrame=performance.now();render();});
+}
+function outcome(n:1|2,pos:number){
+  const ob=race.config.objectives[n],name=n===1?'Theo':'Nico',ok=onTarget(race,n,pos);
+  if(ob.kind==='beat'){const rival=ROSTER[ob.rival].name.split(' ')[1];return ok?`${name} finished ahead of ${rival}.`:`${rival} finished ahead of ${name}.`;}
+  const goal=ob.max===1?'the win':ob.max===3?'the podium':`the top ${ob.max}`;
+  return ok?`${name} delivered ${goal}.`:`${name} missed ${goal}.`;
 }
 function showDebrief() {
   const modal=$<HTMLDialogElement>('#modal');const result=order(race);const a=result.findIndex(c=>c.id===1)+1,b=result.findIndex(c=>c.id===4)+1;
   modal.classList.add('debrief-modal');
-  modal.innerHTML=`<div class="modal-kicker">ENGINEERING DEBRIEF / SEED ${race.seed}</div><h2>${a<=3&&b<=5?'A team result.':'Every call is a lesson.'}</h2><p class="modal-intro">${a<=3?'Podium secured.':'The podium slipped away.'} ${b<=5?'Nico finishes in the top five.':'There’s more to find with Nico.'}</p><div class="result-grid">${[1,2].map(n=>{const c=playerCar(race,n)!;return `<div><span>${c.name}</span><strong>P${result.findIndex(x=>x.id===c.id)+1}</strong><small>${c.stops} stops · ${c.trust}% outcome-based trust</small></div>`;}).join('')}</div><div id="comparison">${comparison?comparisonHTML():`<p class="analysis-progress" role="status">${analysisProgress||'Replaying default strategy and testing pit plans…'}</p>`}</div><div class="debrief-actions"><button id="inspect" class="secondary">Inspect pit wall</button><button id="restart" class="primary">REPLAY SCENARIO ↗</button></div>`;
+  const both=onTarget(race,1,a)&&onTarget(race,2,b);
+  const inSeason=race.config.setup.mode==='season'&&!!season;
+  const table=inSeason?standings(season!):null,dpos=(id:number)=>table!.drivers.findIndex(d=>d.id===id)+1;
+  const seasonBlock=inSeason?`<div class="debrief-section"><h3>Championship after round ${race.config.setup.round}</h3><p>Theo P${dpos(1)} (${table!.drivers[dpos(1)-1].points} pts) · Nico P${dpos(4)} (${table!.drivers[dpos(4)-1].points} pts) · Apex P${table!.teams.findIndex(t=>t.team==='Apex')+1} in the constructors’ (${table!.teams.find(t=>t.team==='Apex')!.points} pts). Leader: ${esc(ROSTER[table!.drivers[0].id].name)}, ${table!.drivers[0].points} pts.</p></div>`:'';
+  modal.innerHTML=`<div class="modal-kicker">ENGINEERING DEBRIEF / ${esc(raceTitle(race.config.setup).title.toUpperCase())} / SEED ${race.seed}</div><h2>${both?'A team result.':'Every call is a lesson.'}</h2><p class="modal-intro">${outcome(1,a)} ${outcome(2,b)}</p><div class="result-grid">${[1,2].map(n=>{const c=playerCar(race,n)!;return `<div><span>${c.name}</span><strong>P${result.findIndex(x=>x.id===c.id)+1}</strong><small>${c.stops} stops · ${c.trust}% outcome-based trust</small></div>`;}).join('')}</div>${seasonBlock}<div id="comparison">${comparison?comparisonHTML():`<p class="analysis-progress" role="status">${analysisProgress||'Replaying default strategy and testing pit plans…'}</p>`}</div><div class="debrief-actions"><button id="inspect" class="secondary">Inspect pit wall</button><button id="choose" class="secondary">Choose another race</button>${inSeason?`<button id="next-round" class="primary">${nextRound(season!)?`NEXT ROUND · ${esc(nextRound(season!)!.gp.toUpperCase())}`:'SEASON STANDINGS'} ↗</button>`:'<button id="restart" class="primary">REPLAY THIS RACE ↗</button>'}</div>`;
   if(!modal.open)modal.showModal();
-  $('#inspect').onclick=()=>modal.close();$('#restart').onclick=()=>{modal.close();reset();};
+  $('#inspect').onclick=()=>modal.close();$('#choose').onclick=()=>{modal.close();reset(true,true);};
+  modal.querySelector<HTMLButtonElement>('#restart')?.addEventListener('click',()=>{modal.close();reset(true);});
+  modal.querySelector<HTMLButtonElement>('#next-round')?.addEventListener('click',()=>{modal.close();setup=seasonSetup(season!)??{...setup,round:undefined,brief:undefined};reset(true);});
   if(!comparison&&!analysisWorker)startAnalysis();
 }
 function startAnalysis(){
@@ -176,12 +316,12 @@ function startAnalysis(){
   const worker=analysisWorker;
   worker.onmessage=(e:MessageEvent)=>{
     if(worker!==analysisWorker)return;
-    if(e.data.type==='progress'){analysisProgress=`Tested ${e.data.done} of ${e.data.total} default / one-stop strategies…`;const node=document.querySelector('#comparison .analysis-progress');if(node)node.textContent=analysisProgress;}
+    if(e.data.type==='progress'){analysisProgress=`Tested ${e.data.done} of ${e.data.total} strategies…`;const node=document.querySelector('#comparison .analysis-progress');if(node)node.textContent=analysisProgress;}
     if(e.data.type==='complete'){comparison=e.data.result;worker.terminate();analysisWorker=null;if(document.querySelector('#comparison'))$('#comparison').innerHTML=comparisonHTML();}
     if(e.data.type==='error'){worker.terminate();analysisWorker=null;analysisProgress='Analysis failed: '+e.data.message;const node=document.querySelector('#comparison');if(node)node.textContent=analysisProgress;}
   };
   worker.onerror=()=>{worker.terminate();analysisWorker=null;analysisProgress='Analysis worker failed. Reload and replay to try again.';const node=document.querySelector('#comparison');if(node)node.textContent=analysisProgress;};
-  worker.postMessage({seed:race.seed,decisions:race.decisions});
+  worker.postMessage({setup:race.config.setup,decisions:race.decisions});
 }
 function comparisonHTML() {
   const analysis=comparison!;
@@ -190,9 +330,10 @@ function comparisonHTML() {
   const available=alternatives.filter(a=>a.result);
   const strongest=[...available].sort((a,b)=>(b.secondsGained??0)-(a.secondsGained??0))[0];
   const lesson=strongest&&strongest.secondsGained!>0.1?`Moving ${strongest.car===1?'Theo’s':'Nico’s'} “${strongest.action}” call one lap ${strongest.direction} would produce P${strongest.result!.positions[strongest.car-1]}, ${strongest.secondsGained!.toFixed(1)} seconds faster for that driver.`:available.length?'None of the tested single-call shifts improved that driver’s finish time. Your timing held up against these alternatives.':'No movable calls to compare yet. Try issuing a pit call during your next run.';
-  return `<div class="debrief-section"><h3>A benchmark that races back</h3><div class="comparison-table"><table><thead><tr><th>STRATEGY</th><th>THEO</th><th>NICO</th><th>POINTS</th><th>GOALS</th></tr></thead><tbody>${row('Your race',analysis.actual)}${row('Default engineer',analysis.baseline.result)}${row('Best found',analysis.best.result)}</tbody></table></div><p>${esc(analysis.baseline.plan)}</p><div class="lesson"><span class="eyebrow">ONE THING TO TAKE INTO YOUR NEXT RACE</span><p>${esc(lesson)}</p></div></div><div class="debrief-section"><h3>Best strategy found <span>${analysis.candidates} replays tested</span></h3><p class="best-plan">${esc(analysis.best.plan)}</p><small>Ranks by scenario goals, then team points, then combined finish time. Search includes your race, the default engineer, one-stop plans at laps 18–24 with all three compounds at balanced pace, and the call shifts below. This is a bounded, hindsight search, not a proven global optimum.</small></div><div class="debrief-section"><h3>What if you made the call a lap earlier?</h3><p>One call moves at a time, using your original distance/time trace. Other calls keep their original times. Both cars and the field are re-simulated with the same per-car random events.</p>${alternatives.length?`<div class="whatifs">${alternatives.map(a=>`<article class="whatif"><div><b>${a.car===1?'THEO':'NICO'} · ${esc(a.action)}</b><time>${formatTime(a.originalAt)}</time></div><strong>One lap ${a.direction}${a.result?' → P'+a.result.positions[a.car-1]:''}</strong>${a.result?`<p>${Math.abs(a.secondsGained!).toFixed(1)}s ${a.secondsGained!>=0?'faster':'slower'} · Teammate P${a.result.positions[a.car===1?1:0]} · ${a.result.points} team points</p>`:''}<small>${esc(a.note)}</small></article>`).join('')}</div>`:'<p>No calls were recorded. Your next race will unlock per-call alternatives.</p>'}</div>`;
+  return `<div class="debrief-section"><h3>A benchmark that races back</h3><div class="comparison-table"><table><thead><tr><th>STRATEGY</th><th>THEO</th><th>NICO</th><th>POINTS</th><th>GOALS</th></tr></thead><tbody>${row('Your race',analysis.actual)}${row('Default engineer',analysis.baseline.result)}${row('Best found',analysis.best.result)}</tbody></table></div><p>${esc(analysis.baseline.plan)}</p><div class="lesson"><span class="eyebrow">ONE THING TO TAKE INTO YOUR NEXT RACE</span><p>${esc(lesson)}</p></div></div><div class="debrief-section"><h3>Best strategy found <span>${analysis.candidates} replays tested</span></h3><p class="best-plan">${esc(analysis.best.plan)}</p><small>Ranks by race goals, then team points, then combined finish time. ${esc(analysis.method)} This is a bounded, hindsight search, not a proven global optimum.</small></div><div class="debrief-section"><h3>What if you made the call a lap earlier?</h3><p>One call moves at a time, using your original distance/time trace. Other calls keep their original times. Both cars and the field are re-simulated with the same per-car random events.</p>${alternatives.length?`<div class="whatifs">${alternatives.map(a=>`<article class="whatif"><div><b>${a.car===1?'THEO':'NICO'} · ${esc(a.action)}</b><time>${formatTime(a.originalAt)}</time></div><strong>One lap ${a.direction}${a.result?' → P'+a.result.positions[a.car-1]:''}</strong>${a.result?`<p>${Math.abs(a.secondsGained!).toFixed(1)}s ${a.secondsGained!>=0?'faster':'slower'} · Teammate P${a.result.positions[a.car===1?1:0]} · ${a.result.points} team points</p>`:''}<small>${esc(a.note)}</small></article>`).join('')}</div>`:'<p>No calls were recorded. Your next race will unlock per-call alternatives.</p>'}</div>`;
 }
-function reset() {airedLines.clear();voiceInput.cancel();interruptRadio();race=createRace();convo=newConversation();lastLine=0;thinking=null;comparison=null;analysisWorker?.terminate();analysisWorker=null;analysisProgress='';debrief=false;finishedWall=0;speed=1;accumulator=0;nextTyre[1]='medium';nextTyre[2]='medium';$('#messages').innerHTML='';setSpeed(1);render();showBriefing();}
+/** Start over. replay keeps the same race and seed; picking returns to the race picker. */
+function reset(showPicker=true,newRace=false) {if(newRace&&setup.mode==='full')setup={...setup,seed:newSeed()};airedLines.clear();voiceInput.cancel();interruptRadio();race=createRace(setup);convo=newConversation();inspectedDriver=1;lastLine=0;thinking=null;comparison=null;analysisWorker?.terminate();analysisWorker=null;analysisProgress='';debrief=false;finishedWall=0;speed=1;accumulator=0;nextTyre[1]='medium';nextTyre[2]='medium';$('#messages').innerHTML='';setSpeed(1);renderChrome();render();if(showPicker)showBriefing();}
 function setSpeed(n:number) {speed=n;convo.speed=n;document.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach(b=>{b.classList.toggle('active',Number(b.dataset.speed)===n);b.setAttribute('aria-pressed',String(Number(b.dataset.speed)===n));});}
 app.addEventListener('click',e=>{
   const marker=(e.target as Element).closest('[data-map-driver]');
@@ -208,7 +349,7 @@ app.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&(e.target 
 $('#play').onclick=()=>{if(race.status==='finished'){showDebrief();return;}if(race.status==='ready'){briefing=false;$<HTMLDialogElement>('#modal').close();beginRace();}else race.status=race.status==='running'?'paused':'running';if(race.status==='paused')interruptRadio();accumulator=0;lastFrame=performance.now();render();};
 $('#guide').onclick=()=>{guided=!guided;$('#guide').textContent=guided?'Hints on':'Hints off';$('#hint').hidden=!guided;document.body.classList.toggle('hints-off',!guided);};
 function setAudio(enabled:boolean){voice.enabled=enabled;sound.setEnabled(enabled);$('#sound').textContent=enabled?'Audio on':'Audio off';$('#sound').setAttribute('aria-pressed',String(enabled));if(!enabled)interruptRadio();else voice.unlock();}
-$('#sound').onclick=()=>{setAudio(!voice.enabled);if(voice.enabled)voice.say('Radio check. Pit wall online.','DATA ENGINEER');};
+$('#sound').onclick=()=>{setAudio(!voice.enabled);if(voice.enabled)voice.prepare().then(()=>voice.say('Radio check. Pit wall online.','DATA ENGINEER')).catch(()=>{/* status shows the failure */});};
 voice.onStatus=(text,error=false)=>{$('#radio-status').textContent=text;$('#radio-status').classList.toggle('voice-error',error);if(error&&voice.enabled&&race.status==='running'){race.status='paused';accumulator=0;}const button=document.querySelector('#start-session');if(button instanceof HTMLButtonElement&&button.disabled)button.textContent=text;};
 $('#radio-preview').onclick=async()=>{
   const button=$<HTMLButtonElement>('#radio-preview');button.disabled=true;
@@ -280,12 +421,13 @@ function showTransmission(speaker:string,text:string){
 }
 function renderRaceStory(){
   const sorted=order(race),car=playerCar(race,selected)!;
-  const remaining=TOTAL_LAPS-Math.floor(sorted[0].distance);
-  $('#race-headline').textContent=race.status==='finished'?'CHEQUERED FLAG':race.flag==='safety'?'THE WINDOW IS OPEN':remaining<=5?'BRING IT HOME':car.pitRemaining?'EVERY SECOND COUNTS':'THE LONG GAME';
-  $('#race-stakes').textContent=race.flag==='safety'?'Safety car deployed. Lower pit loss. The field is closing up.':car.pitRemaining?`${car.code} in the pit lane · ${car.pitRemaining}s remaining`:remaining<=5?`${remaining} laps left. Make the tyres count.`:'Two cars. One strategy. Your decisions shape the finish.';
+  const remaining=race.config.totalLaps-Math.floor(sorted[0].distance),wet=wetness(race);
+  const scenario=scenarioById(race.config.setup.scenario),full=race.config.setup.mode==='full';
+  $('#race-headline').textContent=race.status==='finished'?'CHEQUERED FLAG':race.flag==='safety'?'THE WINDOW IS OPEN':wet>0.3?'RAIN FALLING':remaining<=5?'BRING IT HOME':car.pitRemaining?'EVERY SECOND COUNTS':full?raceTitle(race.config.setup).headline:scenario.headline;
+  $('#race-stakes').textContent=race.flag==='safety'?'Safety car deployed. Lower pit loss. The field is closing up.':wet>0.3?'Inters or slicks: the crossover decides this race.':car.pitRemaining?`${car.code} in the pit lane · ${car.pitRemaining}s remaining`:remaining<=5?`${remaining} laps left. Make the tyres count.`:full?`${race.config.totalLaps} laps. Two cars. One strategy.`:scenario.stakes;
   $('#live-battles').innerHTML=race.cars.filter(c=>c.player).map(c=>{const position=sorted.indexOf(c)+1;const ahead=sorted[position-2];const gap=ahead?Math.max(0,(ahead.distance-c.distance)*lapPace(c,race)).toFixed(1):'0.0';return `<div class="battle-card ${c.id===1?'theo':'nico'}"><span>${c.id===1?'01 / THEO':'02 / NICO'}</span><b>P${position}</b><small>${c.finishedAt!==null?'FINISHED':c.pitRemaining?'IN PIT LANE · '+c.pitRemaining+'s':c.pitOrder?'BOX THIS LAP':ahead?'↗ '+gap+'s TO '+ahead.code:'LEADING THE RACE'}</small></div>`;}).join('');
   const path=$<SVGPathElement&HTMLElement>('#track-path'),length=path.getTotalLength();
-  $('#car-trails').innerHTML=race.cars.filter(c=>c.player&&c.finishedAt===null).map(c=>`<path d="${track}" fill="none" stroke="${c.color}" stroke-width="8" stroke-linecap="round" opacity=".28" stroke-dasharray="${length*.065} ${length*.935}" stroke-dashoffset="${-((c.distance%1)-.065)*length}"/>`).join('');
+  $('#car-trails').innerHTML=race.cars.filter(c=>c.player&&c.finishedAt===null).map(c=>`<path d="${trackPath()}" fill="none" stroke="${c.color}" stroke-width="8" stroke-linecap="round" opacity=".28" stroke-dasharray="${length*.065} ${length*.935}" stroke-dashoffset="${-((c.distance%1)-.065)*length}"/>`).join('');
   if(!onAir&&!thinking&&!convo.questions.length&&performance.now()-lastAirTime>8500)$('.on-air-panel').classList.remove('active');
 }
 $<HTMLDialogElement>('#modal').addEventListener('cancel',()=>{briefing=false;});
@@ -311,4 +453,4 @@ function frame(now:number) {
   if(now-lastRender>200){render();if(race.status==='running'&&voice.enabled&&voice.busy)$('#flag').textContent=voice.buffering?'◌ PREPARING TEAM RADIO':'● TEAM RADIO · 1×';lastRender=now;}
   requestAnimationFrame(frame);
 }
-render();showBriefing();requestAnimationFrame(frame);
+renderChrome();render();showBriefing();requestAnimationFrame(frame);

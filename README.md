@@ -1,6 +1,6 @@
 # Pitwall — F1 Race Engineer
 
-A browser-based race strategy proof of concept. Run the pit wall for two fictional drivers in a synthetic Barcelona scenario. Built with TypeScript and Vite; all race logic runs locally.
+A browser-based race strategy proof of concept. Run the pit wall for two fictional drivers: 15 curated late-race scenarios, full races at any of the 23 rounds of the 2026 calendar, or a whole 2026 season against a fictional 22-driver grid. Built with TypeScript and Vite; all race logic runs locally.
 
 ## Run
 
@@ -21,8 +21,8 @@ npm run preview
 
 ## Play
 
-- Car one: Theo Laurent, P2, ageing mediums. Objective: podium.
-- Car two: Nico Reyes, P5, ageing softs. Objective: top five.
+- Choose a race in the briefing. **Scenarios** are 15 curated late-race situations (table below). **Full race** starts from the grid at any of the 23 circuits on the 2026 calendar, at sprint, half or full distance, with your choice of starting tyres for Theo (car one) and Nico (car two). **Season 2026** runs every round in calendar order with points and standings.
+- Each race shows its objectives on the dashboard: a finishing position for each driver, or (in the title decider) finishing ahead of a rival.
 - Select a car and compound in the strategy desk, then call the stop. Stops execute at the next lap boundary; stay out cancels an uncommitted stop.
 - Push trades tyre life for pace; conserve trades pace for tyre life.
 - The team talks to you. Drivers ask to push or box, the strategist brings decisions (safety-car stops, team orders), and everyone reacts to overtakes, pit stops and the result. Open questions appear in the on-air panel with a countdown and quick replies; answer with `yes` / `no`, the buttons, or the `Y` / `N` keys. Silence gets a reaction, never a call.
@@ -30,11 +30,14 @@ npm run preview
 - An unspecified car uses the last addressed car, or the car whose question is open. Missing or conflicting instructions get an in-character clarification. Questions cannot execute commands.
 - Speech recognition is optional and browser-dependent. Microphone input may use the browser vendor's remote speech service. No recording is stored by this app. Text and buttons always work.
 - Choose headset audio in the briefing, or toggle Audio during a race. Player radio calls interrupt synthesised speech; drivers have queue priority.
-- Finish the session to view positions, objective outcomes, and a same-seed default-strategy and what-if comparison. Replay starts the same scenario from scratch.
+- Finish the session to view positions, objective outcomes, and a same-seed default-strategy and what-if comparison. **Replay this race** restarts the same race and seed; **Choose another race** returns to the picker. The last choice is remembered.
 
 ## Architecture
 
-- `src/sim.ts`: pure deterministic simulation, seeded PRNG, scenario setup, tyre degradation, traffic, rival pit logic, safety-car events, pit service and replay. No browser or network dependencies.
+- `src/roster.ts`: the fictional grid: 11 teams with car pace and 22 drivers with skill. Edit names here.
+- `src/season.ts`: season state, points, standings, round seeds, radio briefings, simulated rounds and browser storage.
+- `src/scenarios.ts`: the 2026 calendar, circuits, scenarios and full-race setups, qualifying and grids; turns a choice into the plain race config the simulation runs on (laps, pace, pit loss, overtaking difficulty, wear, safety-car windows, weather, objectives).
+- `src/sim.ts`: pure deterministic simulation, seeded PRNG, tyre degradation, traffic, rival pit logic, safety-car events, pit service and replay. No browser or network dependencies.
 - `src/intent.ts`: local command parser, yes/no answers and typed intents, including common speech-recognition slips (“car to”, “Nicko”). No LLM calls or API keys.
 - `src/conversation.ts`: the pit-wall conversation. Turns simulation events into radio lines, tracks questions asked of the player, remembers earlier calls, reacts to passes, stops and results, and answers in character. Every race change goes through `applyCommand`.
 - `src/race-view.ts`: shared read-only race descriptions (names, gaps, tyre outlook).
@@ -48,9 +51,9 @@ One tick is one simulated second, independent of rendering and acceleration. Com
 
 ## Deliberate prototype limits
 
-This is a playable proof of concept, not the full design or an F1 physics model. Names, pace, weather, and scenario data are synthetic. The track drawing is schematic. There are ten cars, a single dry scenario, a scheduled debris safety car, and simplified passing, fuel and pit-lane models. Forecast confidence is scenario flavor, not a live prediction. Race rules such as mandatory compound changes, DRS, penalties, and lapped-car safety-car procedures are not implemented.
+This is a playable proof of concept, not the full design or an F1 physics model. Team and driver names are fictional; pace, weather and scenario data are synthetic. Venues and the calendar are real; lap counts, lap times, pit losses and temperatures are approximations. Five circuits have hand-drawn outlines; the other 18 use a generated schematic loop that is not the real layout. Scenarios run with ten cars; full races and the season with 22. Forecast confidence is scenario flavor, not a live prediction. Race rules such as mandatory compound changes, DRS, penalties, and lapped-car safety-car procedures are not implemented.
 
-Trust is an outcome-based debrief indicator; it does not alter compliance. There is no persistent career, live weather, historical data import, or team credibility model yet. Microphone permission and live speech quality still depend on the player’s browser and device; use the included voice check to verify the transcription engine.
+Trust is an outcome-based debrief indicator; it does not alter compliance. The season is the only persistent mode. There is no live weather, historical data import, or team credibility model yet. Microphone permission and live speech quality still depend on the player’s browser and device; use the included voice check to verify the transcription engine.
 
 Static output in `dist/` can be hosted without a backend. The repository includes a private Sites deployment manifest. The original GitHub remote is retained.
 
@@ -119,6 +122,50 @@ In simulated full races with an answering player, voiced lines went from 2.0 to 
 
 ### Live-radio delivery
 
-Headset startup now waits for the live voice model, not only the bundled opening clip. During generation, the simulation clock holds and shows **Preparing team radio**. During spoken turns, it advances at 1×; the selected acceleration resumes once the radio is idle. Text-only mode keeps the requested simulation speed. This is a local-model latency accommodation, not hosted real-time speech.
+Headset startup waits for the live voice model, not only the bundled opening clip, but it never traps the player: **Start now** races at once. Until the voices load, only the bundled team clips are voiced and every other line stays text, so nothing holds the race. The loader reports each phase (download, GPU start, voice test, CPU voices). If the GPU path shows no sign of progress for 20 s, the worker restarts on the CPU voices, and that browser goes straight to the CPU voices next time (until its version changes). During generation, the simulation clock holds and shows **Preparing team radio**. During spoken turns, it advances at 1×; the selected acceleration resumes once the radio is idle. Text-only mode keeps the requested simulation speed. This is a local-model latency accommodation, not hosted real-time speech.
 
 Reports expire against race time, not a 30-second wall-clock cutoff while synthesis is still running. The director prefetches first sentences and renders the next sentence during playback instead of queueing every sentence in several reports at once. Every generated clip is checked for non-silent audio. Playback failures pause the race and remain visible rather than silently continuing with text alone. Player interruptions and genuinely stale race facts are still discarded.
+
+## Scenarios and full races
+
+Every race carries a plain `RaceConfig` built in `src/scenarios.ts`. The simulation, the team, the debrief and the dashboard read it instead of constants. The original Barcelona scenario keeps exactly its previous numbers: its finishing times, laps, stops and events are identical to the earlier build.
+
+Circuits differ where strategy feels it: lap time, pit loss (19–24 s), how much faster a car must be to pass (0.35 s/lap at Monza, 1.8 at Monaco), and tyre degradation. Where passing is nearly impossible, rivals only take a safety-car stop if their tyres will not make the flag.
+
+Scenarios were tuned with a strategy sweep (thousands of pit, compound and pace combinations) so that doing nothing misses at least one goal while a real decision meets both:
+
+| Scenario | The decision that wins it |
+|---|---|
+| Barcelona · *The long game* | when to stop, and whether to use the safety car |
+| Monza · *Slipstream* | stop Theo early for softs and come back through; give Nico fresh tyres |
+| Monaco · *Track position* | box Theo for softs under the safety car while rivals stay out |
+| Silverstone · *Changing skies* | the crossover to inters and back; a late call costs the one-two |
+| Abu Dhabi · *Title decider* | push, and take the safety-car stop for softs to beat Voss |
+
+**Rain.** Track wetness follows the scenario (or, in full races at Silverstone, a seeded shower). Slicks lose up to 20 s a lap as it gets wetter; intermediates are best on a damp-to-wet track and overheat as it dries. Rivals switch at slightly different moments. The team warns from the radar, reports the first drops, asks for the crossover and the switch back, and the strategy desk offers inters only in races with weather.
+
+**Full races.** Cars start from a qualifying grid with a standing start. Safety cars (and Silverstone rain) are drawn from the race seed, so the same seed replays the same race and a new seed brings a new one. The team opens with the start and reviews it after lap one. The debrief searches pit policies per car (stop timing and compound preference) because a full distance needs more than one stop; wet races also search inters timing.
+
+## Fifteen scenarios and Season 2026
+
+**Scenarios.** Ten new late-race situations join the original five. Each was tuned with the same strategy sweep: doing nothing misses at least one goal, and only a small share of plans (1–14%) meets both.
+
+| # | Scenario | Goal (Theo / Nico) | The decision that wins it |
+|---|---|---|---|
+| 06 | Melbourne · *Season opener* | win / podium | Theo pushes, waits for the safety car and takes softs; Nico stops at once for softs and conserves |
+| 07 | Suzuka · *Two-stop gamble* | win / podium | both stop for hards; Theo pushes |
+| 08 | Sepang · *Tropical heat* | win / top 4 | undercut: Theo stops first for hards and pushes; Nico pushes on mediums and stops again |
+| 09 | Baku · *Two safety cars* | win / podium | Theo waits for a safety car; Nico stops now for softs and conserves |
+| 10 | Spa · *Ardennes rain* | podium / top 4 | the first good call to inters; nothing else works |
+| 11 | Hungaroring · *Team orders* | P2 / win | swap the cars, then stop both |
+| 12 | Zandvoort · *Hold the line* | win / top 5 | stop for softs and hold track position |
+| 13 | Singapore · *Under the lights* | win / top 5 | Theo takes softs under the safety car (an early stop works only at the end of lap two); Nico stops at once for softs |
+| 14 | Interlagos · *Late storm* | P2 / top 4 | the inters timing as the storm arrives |
+| 15 | Las Vegas · *Cold night* | win / podium | Theo goes long at normal pace (pushing kills the tyres) or stops early for softs; Nico must stop for hards and push |
+
+**Cold tyres.** A circuit can set `warmup`: extra seconds a fresh set costs on its first lap, fading to zero over that lap. Only Las Vegas uses it (3 s), so a stop there costs more than the pit lane. Every other circuit is 0, which keeps the earlier races unchanged.
+
+**The grid.** `src/roster.ts` defines 11 fictional teams and 22 fictional drivers. Full races and the season use all of them. Pace is team car pace + driver skill + a small per-circuit bias, so the order changes from track to track. Qualifying adds seeded noise. Scenarios keep the original ten cars and their exact numbers.
+
+**Season 2026.** All 23 rounds of the 2026 calendar run in order as full races at the distance chosen when the season starts. Race a round yourself or **Simulate round**: the default engineer runs both cars. Each round has its own seed derived from the season seed, so standings depend on the season seed, not on when you play. Points are 25–18–15–12–10–8–6–4–2–1; drivers are ranked by points, then wins, then podiums. The team opens each round with the championship picture (“Round 6, Monaco Grand Prix. Theo is P5 in the championship, 57 behind Vega…”). Standings live in `localStorage` (`pitwall.season.2026`). Abandoning a race mid-way records nothing; **Abandon season** clears the save.
+

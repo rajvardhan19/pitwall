@@ -11,6 +11,14 @@ interface Item extends RadioLine {parts:Part[]}
 const MAX_QUEUE=12;        // anything further back would be stale by the time it played
 const PREFETCH=2;         // synthesise the next line while the current one plays
 const CACHE_SIZE=96;
+const STALLED='GPU voices stalled';
+const STAGES={gpu:'Starting voices on this device’s GPU…',probe:'Testing the radio voices…',cpu:'Loading CPU voices · replies may lag'};
+// A browser whose GPU voices stalled once goes straight to the CPU voices next time. Keyed to the
+// user agent, so a browser update gets a fresh try.
+const CPU_KEY='pitwall.voice.cpu';
+function store(){try{return typeof localStorage==='undefined'?null:localStorage;}catch{return null;}}
+function gpuAllowed(){return typeof navigator!=='undefined'&&'gpu' in navigator&&store()?.getItem(CPU_KEY)!==navigator.userAgent;}
+function preferCpu(){try{store()?.setItem(CPU_KEY,navigator.userAgent);}catch{/* private mode */}}
 
 /**
  * Long lines are spoken sentence by sentence, so the first sentence airs as soon as it is
@@ -36,6 +44,10 @@ export function sentences(text:string):string[]{
  */
 export class RadioVoice {
   enabled=false;blocked=false;ready=false;
+  /** Until the live voices load, play only the bundled clips and leave every other line as text, so nothing holds the race. */
+  textUntilReady=false;
+  /** Give up on the GPU voices after this long without any sign of progress, and load the CPU voices instead. */
+  stallMs=20000;
   /** Where voices render: the GPU when the browser offers WebGPU, otherwise the CPU (about 3x slower than speech). */
   device:'webgpu'|'wasm'|null=null;
   /** Current race time in seconds. */
@@ -44,6 +56,7 @@ export class RadioVoice {
   onStatus:(text:string,error?:boolean)=>void=()=>{};
   private queue:Item[]=[];private current:Item|null=null;private speaking=false;private generation=0;
   private worker:Worker|null=null;private serial=0;private loading:Promise<void>|null=null;
+  private watchdog:ReturnType<typeof setTimeout>|null=null;private stage='';
   private pending=new Map<number,{resolve:(clip:Clip)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private context:AudioContext|null=null;private source:AudioBufferSourceNode|null=null;
   private cache=new Map<string,Clip>();
@@ -57,11 +70,16 @@ export class RadioVoice {
     if(!this.context)this.context=new AudioContext();
     void this.context.resume().catch(()=>this.onStatus('Click Audio on to enable playback.',true));
   }
-  private request(type:'load'|'speak',text='',speaker='ENGINEER',onId?:(id:number)=>void):Promise<Clip>{
+  private request(type:'load'|'speak',text='',speaker='ENGINEER',onId?:(id:number)=>void,prefer?:'webgpu'|'wasm'):Promise<Clip>{
     if(!this.worker){
       this.worker=new Worker(new URL('./radio-worker.ts',import.meta.url),{type:'module'});
       this.worker.onmessage=({data})=>{
-        if(data.type==='progress'){if(!this.ready)this.onStatus(`Downloading neural voices · ${Math.round(data.progress)}%`);return;}
+        if(data.type==='progress'||data.type==='stage'){
+          if(this.watchdog)this.arm();
+          if(data.type==='stage')this.stage=data.stage;
+          if(!this.ready)this.onStatus(data.type==='stage'?STAGES[data.stage as keyof typeof STAGES]:`Downloading ${this.stage==='cpu'?'CPU ':''}neural voices · ${Math.round(data.progress)}%`);
+          return;
+        }
         if(data.type==='ready')this.device=data.device??'wasm';
         const p=this.pending.get(data.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(data.id);
         if(data.type==='error')p.reject(new Error(data.error));else p.resolve({audio:data.audio,rate:data.rate});
@@ -71,7 +89,6 @@ export class RadioVoice {
     const id=++this.serial;onId?.(id);
     return new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>this.resetWorker('Neural voice loading or generation timed out. Try Load voices again.'),type==='load'?240000:60000);
-      const prefer=type==='load'?(typeof navigator!=='undefined'&&'gpu' in navigator?'webgpu':'wasm'):undefined;
       this.pending.set(id,{resolve,reject,timer});this.worker!.postMessage({id,type,text,speaker,prefer});
     });
   }
@@ -82,8 +99,29 @@ export class RadioVoice {
     this.worker?.postMessage({type:'cancel',ids:live});
   }
   private resetWorker(reason:string){
-    this.worker?.terminate();this.worker=null;this.ready=false;this.loading=null;
+    this.stopWorker(reason);this.ready=false;this.loading=null;
+  }
+  private stopWorker(reason:string){
+    this.disarm();this.worker?.terminate();this.worker=null;
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error(reason));}this.pending.clear();
+  }
+  private arm(){this.disarm();this.watchdog=setTimeout(()=>{this.watchdog=null;this.stopWorker(STALLED);},this.stallMs);}
+  private disarm(){if(this.watchdog)clearTimeout(this.watchdog);this.watchdog=null;}
+  /** Load the voices on the GPU if the browser offers one; if that stalls or fails, use the CPU voices. */
+  private async open(){
+    if(gpuAllowed()){
+      this.arm();
+      try{
+        await this.request('load','','ENGINEER',undefined,'webgpu');
+        // The worker fell back to the CPU itself (GPU error or silent audio): skip the GPU next time.
+        if(this.device!=='webgpu')preferCpu();
+        return;
+      }catch(e){
+        if(!(e instanceof Error&&e.message===STALLED))throw e;
+        preferCpu();this.stage='cpu';this.onStatus('GPU voices stalled in this browser · switching to CPU voices');
+      }finally{this.disarm();}
+    }
+    await this.request('load','','ENGINEER',undefined,'wasm');
   }
   async connect(){
     this.unlock();
@@ -98,7 +136,7 @@ export class RadioVoice {
     if(this.ready)return Promise.resolve();
     if(!this.loading){
       this.onStatus('Loading local neural voices. First download is about 90 MB on CPU, 310 MB with a GPU.');
-      this.loading=this.request('load').then(()=>{this.ready=true;this.onStatus(this.device==='webgpu'?'Neural radio ready · rendered on this device’s GPU':'Neural radio ready · CPU mode, replies may lag');}).catch(e=>{this.loading=null;this.onStatus(`Voices unavailable: ${e.message}`,true);throw e;});
+      this.loading=this.open().then(()=>{this.ready=true;this.onStatus(this.device==='webgpu'?'Neural radio ready · rendered on this device’s GPU':'Neural radio ready · CPU mode, replies may lag');}).catch(e=>{this.loading=null;this.onStatus(`Voices unavailable: ${e.message}`,true);throw e;});
     }
     return this.loading;
   }
@@ -136,6 +174,7 @@ export class RadioVoice {
   /** Offer a line to the radio. */
   line(l:RadioLine){
     if(!this.enabled||this.blocked)return;
+    if(this.textUntilReady&&!this.ready&&!radioCue(l.speaker,l.text))return;
     // A pre-rendered cue covers the whole line; otherwise speak it sentence by sentence.
     const parts=(radioCue(l.speaker,l.text)?[l.text]:sentences(l.text)).map(text=>({text}));
     const item:Item={...l,parts};

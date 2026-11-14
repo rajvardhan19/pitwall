@@ -11,6 +11,8 @@ const GPU_DTYPE='fp32';
 type Device='webgpu'|'wasm';
 let model:Promise<{tts:KokoroTTS;device:Device}>|null=null;
 const progress=(p:{status:string;progress?:number})=>{if('progress' in p)self.postMessage({type:'progress',progress:p.progress});};
+// Each loading phase is reported, so the page can tell a slow load from a stalled one.
+const stage=(name:'gpu'|'probe'|'cpu')=>self.postMessage({type:'stage',stage:name});
 function useSelfHostedWasm(){
   if(!env.backends.onnx.wasm)return;
   env.backends.onnx.wasm.numThreads=1;
@@ -18,17 +20,20 @@ function useSelfHostedWasm(){
 }
 async function open(prefer:Device){
   if(prefer==='webgpu'){
+    stage('gpu');
     const gpu=(self.navigator as Navigator&{gpu?:{requestAdapter():Promise<unknown>}}).gpu;
     if(await gpu?.requestAdapter().catch(()=>null)){
       // WebGPU keeps transformers.js' default runtime from its CDN (too large to self-host).
       try{
         const tts=await KokoroTTS.from_pretrained(MODEL,{dtype:GPU_DTYPE,device:'webgpu',progress_callback:progress});
         // Warm-up render: compiles shaders before the race and proves this GPU produces real audio.
+        stage('probe');
         const probe=await tts.generate('Radio check.',{voice:'am_michael'});
         if(audible(Float32Array.from(Array.isArray(probe.audio)?probe.audio[0]:probe.audio)))return {tts,device:'webgpu' as const};
       }catch{/* fall back to the CPU path below */}
     }else useSelfHostedWasm();
   }else useSelfHostedWasm();
+  stage('cpu');
   return {tts:await KokoroTTS.from_pretrained(MODEL,{dtype:'q8',device:'wasm',progress_callback:progress}),device:'wasm' as const};
 }
 function load(prefer:Device){

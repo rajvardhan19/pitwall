@@ -108,3 +108,39 @@ test('long turns prefetch their first sentence rather than flooding the worker',
   worker.reply({id:worker.requests.at(-1).id,type:'audio',audio:new Float32Array(24000),rate:24000});await flush();
   assert.equal(worker.requests.filter(r=>r.type==='speak').length,2);radio.interrupt();
 });
+// Safari 26 offers WebGPU, but the GPU voice path can sit silent there; the start must never wait on it forever.
+function withGpu(fn:(store:Map<string,string>)=>Promise<void>){
+  const store=new Map<string,string>();
+  const storage={getItem:(k:string)=>store.get(k)??null,setItem:(k:string,v:string)=>void store.set(k,v)};
+  Object.defineProperty(globalThis.navigator,'gpu',{value:{},configurable:true});
+  Object.defineProperty(globalThis,'localStorage',{value:storage,configurable:true});
+  return fn(store).finally(()=>{delete (globalThis.navigator as any).gpu;delete (globalThis as any).localStorage;});
+}
+const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+test('a stalled GPU voice load falls back to the CPU voices and remembers it for this browser',()=>withGpu(async store=>{
+  const radio=setup();radio.stallMs=30;const statuses:string[]=[];radio.onStatus=t=>statuses.push(t);
+  const loading=radio.prepare();const gpuWorker=FakeWorker.last;
+  assert.equal(gpuWorker.requests[0].prefer,'webgpu');
+  gpuWorker.reply({type:'stage',stage:'gpu'});await wait(60);
+  const cpuWorker=FakeWorker.last;assert.notEqual(cpuWorker,gpuWorker);assert.equal(cpuWorker.requests[0].prefer,'wasm');
+  assert.ok(statuses.some(s=>/switching to CPU voices/.test(s)));
+  cpuWorker.reply({id:cpuWorker.requests[0].id,type:'ready',device:'wasm'});await loading;
+  assert.equal(radio.ready,true);assert.equal(radio.device,'wasm');
+  assert.equal(store.get('pitwall.voice.cpu'),navigator.userAgent);
+  // Next session in the same browser skips the GPU attempt.
+  const next=setup();const nextLoad=next.prepare();assert.equal(FakeWorker.last.requests[0].prefer,'wasm');
+  FakeWorker.last.reply({id:FakeWorker.last.requests[0].id,type:'ready',device:'wasm'});await nextLoad;
+}));
+test('a GPU voice download that keeps reporting progress is not mistaken for a stall',()=>withGpu(async store=>{
+  const radio=setup();radio.stallMs=40;const loading=radio.prepare();const worker=FakeWorker.last;
+  for(let i=0;i<6;i++){await wait(15);worker.reply({type:'progress',progress:i*20});}
+  assert.equal(FakeWorker.last,worker);
+  worker.reply({id:worker.requests[0].id,type:'ready',device:'webgpu'});await loading;
+  assert.equal(radio.device,'webgpu');assert.equal(store.has('pitwall.voice.cpu'),false);
+  await wait(60);assert.equal(FakeWorker.last,worker);
+}));
+test('with text radio until the voices load, an unvoiced line never holds the race',async()=>{
+  const radio=setup();radio.textUntilReady=true;const before=FakeWorker.last;
+  radio.say('Box this lap, Theo. Mediums.','STRATEGIST');
+  assert.equal(radio.busy,false);assert.equal(radio.pace(15),15);assert.equal(FakeWorker.last,before);
+});
