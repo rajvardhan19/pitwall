@@ -31,6 +31,7 @@ async function load(m: LoadMessage) {
     },
   }) as TextGenerationPipeline;
   // One tiny run compiles the shaders so the first real reply is quick.
+  self.postMessage({ type: 'stage', text: 'Warming team chat · preparing the first reply…' });
   await generator('Hi', { max_new_tokens: 1 });
 }
 

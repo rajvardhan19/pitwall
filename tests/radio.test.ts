@@ -19,6 +19,17 @@ class Context {
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function setup(){Object.assign(globalThis,{Worker:FakeWorker,AudioContext:Context});const radio=new RadioVoice();radio.enabled=true;return radio;}
+test('background preload warms voices once without creating an audio context or starting playback',async()=>{
+  Object.assign(globalThis,{Worker:FakeWorker,AudioContext:class {constructor(){throw new Error('autoplay before gesture');}}});
+  const radio=new RadioVoice();let aired=false;radio.onAir=()=>{aired=true;};
+  const first=radio.preload(),second=radio.preload();
+  assert.equal(first,second);
+  const worker=FakeWorker.last;assert.equal(worker.requests.length,1);
+  worker.reply({id:worker.requests[0].id,type:'ready',device:'wasm'});await first;
+  await radio.preload();assert.equal(worker.requests.length,1);
+  assert.equal(radio.ready,true);assert.equal(radio.enabled,false);assert.equal(aired,false);
+  Object.assign(globalThis,{AudioContext:Context});
+});
 test('radio calls pronounce driver codes, positions and timing units',()=>{assert.equal(spokenText('LAU P2 · REY 2.4s'),'Theo position 2 , Nico 2.4 seconds');});
 test('all five team members have stable, distinct neural voices',()=>{assert.equal(new Set(['LAU','REY','STRATEGIST','TYRE SPECIALIST','DATA ENGINEER'].map(s=>voiceProfile(s).voice)).size,5);});
 test('interrupt during inference never plays the stale response',async()=>{

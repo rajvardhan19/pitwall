@@ -1,4 +1,4 @@
-// Client for the in-browser team chat model. Opt-in: nothing downloads until enable().
+// Client for the in-browser team chat model, warmed by the race setup screen.
 import { buildPrompt, cleanReply } from './brain-prompt.ts';
 import type { BrainRequest } from './brain-prompt.ts';
 
@@ -30,6 +30,7 @@ export class TeamBrain {
       this.worker = new Worker(new URL('./brain-worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = ({ data }) => {
         if (data.type === 'progress') { if (this.state === 'loading') this.onStatus(`Downloading team chat model · ${Math.round(data.progress)}%`); return; }
+        if (data.type === 'stage') { if (this.state === 'loading') this.onStatus(data.text); return; }
         const p = this.pending.get(data.id);
         if (!p) return;
         clearTimeout(p.timer);

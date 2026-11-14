@@ -133,6 +133,10 @@ export class RadioVoice {
   }
   prepare():Promise<void>{
     this.unlock();
+    return this.preload();
+  }
+  /** Warm the model on page load without requesting audio playback before a user gesture. */
+  preload():Promise<void>{
     if(this.ready)return Promise.resolve();
     if(!this.loading){
       this.onStatus('Loading local neural voices. First download is about 90 MB on CPU, 310 MB with a GPU.');

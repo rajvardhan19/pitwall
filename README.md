@@ -88,9 +88,9 @@ Radio prose lives in `src/conversation.ts`; the simulation only emits structured
 
 The radio director voices lines by priority and drops anything stale in race time, so high simulation speeds do not play minutes-old news. It speaks long lines sentence by sentence (the first sentence airs as soon as it is rendered), synthesises the next line while the current one plays, and cancels queued synthesis when you key the mic. Every role has its own Kokoro voice, including race control and the pit crew.
 
-### Optional team chat model
+### Team chat model
 
-**Enable team chat** downloads Llama-3.2-1B-Instruct (q4f16, about 1 GB, once; the browser caches it) and runs it on WebGPU in a worker. Replies take about a second on a recent laptop GPU. Without WebGPU the button explains that the scripted radio still answers questions; there is no CPU fallback, because on the single-thread WASM runtime replies took around ten seconds and read worse than the scripted answers. The WebGPU path uses Transformers.js' default ONNX runtime from its CDN because that build exceeds static-host file limits. Nothing downloads until you opt in. Llama 3.2 is distributed under the Llama 3.2 Community License.
+Opening the race setup screen automatically downloads Llama-3.2-1B-Instruct (q4f16, about 1 GB, once; the browser caches it) and runs it on WebGPU in a worker. Replies take about a second on a recent laptop GPU. Without WebGPU the status explains that the scripted radio still answers questions; there is no CPU fallback, because on the single-thread WASM runtime replies took around ten seconds and read worse than the scripted answers. The WebGPU path uses Transformers.js' default ONNX runtime from its CDN because that build exceeds static-host file limits. Download and warm-up progress appear in the team preparation panel. Llama 3.2 is distributed under the Llama 3.2 Community License.
 
 The model only answers free-form questions (“Nico, how does the car feel?”, “James, what do you make of it?”) in character, from a fact sheet written in that speaker's perspective plus the last few radio lines. Replies are cleaned and any sentence quoting a number missing from the facts is dropped. The model never proposes or executes race calls: in testing, in-browser-sized models mapped plain questions to the wrong command too often. Commands always go through the parser, quick replies and buttons. Without the model, the same questions get scripted in-character answers.
 
@@ -169,3 +169,7 @@ Scenarios were tuned with a strategy sweep (thousands of pit, compound and pace 
 
 **Season 2026.** All 23 rounds of the 2026 calendar run in order as full races at the distance chosen when the season starts. Race a round yourself or **Simulate round**: the default engineer runs both cars. Each round has its own seed derived from the season seed, so standings depend on the season seed, not on when you play. Points are 25–18–15–12–10–8–6–4–2–1; drivers are ranked by points, then wins, then podiums. The team opens each round with the championship picture (“Round 6, Monaco Grand Prix. Theo is P5 in the championship, 57 behind Vega…”). Standings live in `localStorage` (`pitwall.season.2026`). Abandoning a race mid-way records nothing; **Abandon season** clears the save.
 
+
+### Automatic team preparation
+
+Radio voices and team chat now download and warm automatically when the race setup screen opens. The preparation panel shows download and warm-up progress; browser-cached weights are reused when available. Audio playback still starts from the player’s start/headset gesture. Team chat needs WebGPU; unsupported devices retain the existing race conversation and command handling. Failed loads show retry controls and do not stop the race. The first visit still needs the model downloads (roughly 90–310 MB for voices and about 1 GB for chat).
