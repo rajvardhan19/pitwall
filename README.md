@@ -25,7 +25,7 @@ npm run preview
 
 **https://rajvardhan19.github.io/F1RaceEngineer/** (GitHub Pages). On a desktop browser with GPU access, the first visit downloads the voices and team chat (about 1.4 GB) from Hugging Face behind the start lights; later visits load from the browser's copy. Phones and weak devices get text radio with the recorded team clips.
 
-To publish the current commit: `npm run deploy:pages`. It builds for the `/F1RaceEngineer/` subpath into a temporary folder and pushes it to the `gh-pages` branch, which Pages serves; `main` and the local `dist/` are untouched.
+Every push to `main` publishes it: `.github/workflows/pages.yml` runs the tests, builds for the `/F1RaceEngineer/` subpath and deploys to Pages. The site is built on GitHub because its secret scanner blocks pushes of the built files: a model class name in transformers.js (`Mistral3ForConditionalGeneration`) looks like a Mistral API key to it.
 
 ## Play
 
