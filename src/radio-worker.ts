@@ -12,7 +12,19 @@ const MODEL='onnx-community/Kokoro-82M-v1.0-ONNX';
 // fp16 on WebGPU produced silent audio in testing, so it is not used.
 const GPU_DTYPE='fp32';
 type Device='webgpu'|'wasm';
-let model:Promise<{tts:KokoroTTS;device:Device}>|null=null;
+/** fallback: why the CPU voices were used on a GPU attempt (a real GPU problem, never a network one). */
+type Opened={tts:KokoroTTS;device:Device;fallback?:string};
+let model:Promise<Opened>|null=null;
+// A download can fail for a moment (a 503 from the CDN). That is retried, and then reported so the page offers a
+// retry; it is never a reason to give up on the GPU, since the CPU voices would need the network too.
+const NETWORK=/fetch|network|load failed|status|\b(429|50[0-9])\b|could not locate|timed? ?out|aborted/i;
+const message=(e:unknown)=>e instanceof Error?e.message:String(e);
+async function retry<T>(fn:()=>Promise<T>,tries=3):Promise<T>{
+  for(let i=1;;i++){
+    try{return await fn();}
+    catch(e){if(i>=tries||!NETWORK.test(message(e)))throw e;await new Promise(resolve=>setTimeout(resolve,1500*i));}
+  }
+}
 // Report the weights download only (the tiny config and tokenizer files would make the bar jump back and forth).
 const progress=(p:{status:string;progress?:number;file?:string;loaded?:number;total?:number})=>{if('progress' in p&&/onnx/.test(String(p.file??'')))self.postMessage({type:'progress',file:p.file,loaded:p.loaded,total:p.total,progress:p.progress});};
 // Each loading phase is reported, so the page can tell a slow load from a stalled one.
@@ -22,23 +34,29 @@ function useSelfHostedWasm(){
   env.backends.onnx.wasm.numThreads=1;
   env.backends.onnx.wasm.wasmPaths={mjs:new URL(`${BASE}voice-runtime/ort-wasm-simd-threaded.mjs`,self.location.origin).href,wasm:new URL(`${BASE}voice-runtime/ort-wasm-simd-threaded.wasm`,self.location.origin).href};
 }
-async function open(prefer:Device){
+async function open(prefer:Device):Promise<Opened>{
+  const cpu=()=>retry(()=>KokoroTTS.from_pretrained(MODEL,{dtype:'q8',device:'wasm',progress_callback:progress}));
+  let fallback:string|undefined;
   if(prefer==='webgpu'){
     stage('gpu');
     const gpu=(self.navigator as Navigator&{gpu?:{requestAdapter():Promise<unknown>}}).gpu;
     if(await gpu?.requestAdapter().catch(()=>null)){
       // WebGPU keeps transformers.js' default runtime from its CDN (too large to self-host).
-      try{
-        const tts=await KokoroTTS.from_pretrained(MODEL,{dtype:GPU_DTYPE,device:'webgpu',progress_callback:progress});
-        // Warm-up render: compiles shaders before the race and proves this GPU produces real audio.
-        stage('probe');
-        const probe=await tts.generate('Radio check.',{voice:'am_michael'});
-        if(audible(Float32Array.from(Array.isArray(probe.audio)?probe.audio[0]:probe.audio)))return {tts,device:'webgpu' as const};
-      }catch{/* fall back to the CPU path below */}
-    }else useSelfHostedWasm();
+      const tts=await retry(()=>KokoroTTS.from_pretrained(MODEL,{dtype:GPU_DTYPE,device:'webgpu',progress_callback:progress}))
+        .catch(e=>{if(NETWORK.test(message(e)))throw e;fallback=`GPU voices failed to start: ${message(e)}`;return null;});
+      if(tts){
+        try{
+          // Warm-up render: compiles shaders before the race and proves this GPU produces real audio.
+          stage('probe');
+          const probe=await tts.generate('Radio check.',{voice:'am_michael'});
+          if(audible(Float32Array.from(Array.isArray(probe.audio)?probe.audio[0]:probe.audio)))return {tts,device:'webgpu'};
+          fallback='GPU voices rendered silence';
+        }catch(e){fallback=`GPU test render failed: ${message(e)}`;}
+      }
+    }else{fallback='no GPU adapter for the voice worker';useSelfHostedWasm();}
   }else useSelfHostedWasm();
   stage('cpu');
-  return {tts:await KokoroTTS.from_pretrained(MODEL,{dtype:'q8',device:'wasm',progress_callback:progress}),device:'wasm' as const};
+  return {tts:await cpu(),device:'wasm',fallback};
 }
 function load(prefer:Device){
   if(!model)model=open(prefer).catch(e=>{model=null;throw e;});
@@ -56,8 +74,8 @@ self.onmessage=(event:MessageEvent<{id:number;type:'load'|'speak'|'cancel';text:
   chain=chain.then(async()=>{
     if(cancelled.delete(id))return;
     try{
-      const {tts,device}=await load(prefer??'wasm');
-      if(type==='load'){self.postMessage({id,type:'ready',device});return;}
+      const {tts,device,fallback}=await load(prefer??'wasm');
+      if(type==='load'){self.postMessage({id,type:'ready',device,fallback});return;}
       self.postMessage({id,type:'begin'});
       const profile=voiceProfile(speaker);
       const started=performance.now();

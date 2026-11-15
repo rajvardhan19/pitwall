@@ -63,6 +63,8 @@ export class RadioVoice {
    *  Generous: the first GPU render compiles shaders, which can be slow in Safari, and a false stall leaves the
    *  browser on CPU voices that render about 3x slower than speech. */
   stallMs=45000;
+  /** A model load fails only after this long without any progress: a slow but steady download is never cut off. */
+  loadIdleMs=90000;
   /** One render's time limit, counted from when the worker starts it, not while it waits its turn. */
   renderMs=60000;
   /** How long past a clip's length to wait for it to end before treating the audio output as stalled. */
@@ -78,6 +80,8 @@ export class RadioVoice {
   private onDisk:LocalModels|null=null;
   /** Where voices render: the GPU when the browser offers WebGPU, otherwise the CPU (about 3x slower than speech). */
   device:'webgpu'|'wasm'|null=null;
+  /** Why the worker used the CPU voices on a GPU attempt, if it did. */
+  fallback:string|null=null;
   /** Current race time in seconds. */
   clock:()=>number=()=>0;
   onAir:(speaker:string,text:string)=>void=()=>{};onSilent:()=>void=()=>{};
@@ -85,7 +89,7 @@ export class RadioVoice {
   private queue:Item[]=[];private current:Item|null=null;private speaking=false;private generation=0;
   private worker:Worker|null=null;private serial=0;private loading:Promise<void>|null=null;
   private watchdog:ReturnType<typeof setTimeout>|null=null;private stage='';
-  private downloads:Downloads=new Map();private waitingSince=0;private everReady=false;private recoveries=0;private failures=0;
+  private downloads:Downloads=new Map();private waitingSince=0;private gpuLoading=false;private loadId=0;private everReady=false;private recoveries=0;private failures=0;
   private pending=new Map<number,{resolve:(clip:Clip)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private context:AudioContext|null=null;private source:AudioBufferSourceNode|null=null;
   private cache=new Map<string,Clip>();
@@ -110,9 +114,14 @@ export class RadioVoice {
       this.worker=new Worker(new URL('./radio-worker.ts',import.meta.url),{type:'module'});
       this.worker.onmessage=({data})=>{
         if(data.type==='progress'||data.type==='stage'){
-          if(this.watchdog)this.arm();
           if(data.type==='stage'){this.stage=data.stage;if(data.stage==='cpu'){this.downloads.clear();this.progress=0;}}
           else{this.downloads.set(String(data.file),{loaded:data.loaded??0,total:data.total??0});this.progress=weightsProgress(this.downloads);}
+          // A load that keeps reporting is alive: restart its idle timer.
+          const load=this.pending.get(this.loadId);
+          if(load){clearTimeout(load.timer);load.timer=setTimeout(()=>this.dropOut('Neural voice loading stopped making progress.'),this.loadIdleMs);}
+          // The GPU stall guard covers the silent set-up after the download (shader compilation, the test render),
+          // never the network: a slow moment on the CDN must not send a GPU-capable browser to the CPU voices.
+          if(this.gpuLoading&&(data.type==='stage'&&data.stage==='probe'||data.type==='progress'&&this.progress>=0.999))this.arm();
           // Progress also counts files read from the browser cache, so it says loading, not downloading.
           if(!this.ready)this.onStatus(data.type==='stage'?STAGES[data.stage as keyof typeof STAGES]:`Loading ${this.stage==='cpu'?'CPU ':''}neural voices${this.onDisk?' from this computer':''} · ${Math.round(this.progress*100)}%`);
           return;
@@ -122,7 +131,7 @@ export class RadioVoice {
           const p=this.pending.get(data.id);if(p){clearTimeout(p.timer);p.timer=setTimeout(()=>this.dropOut(TIMED_OUT),this.renderMs);}
           return;
         }
-        if(data.type==='ready')this.device=data.device??'wasm';
+        if(data.type==='ready'){this.device=data.device??'wasm';this.fallback=data.fallback??null;}
         const p=this.pending.get(data.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(data.id);
         if(data.type==='audio'&&data.ms){this.stats.renders.push({ms:data.ms,audioMs:data.audio.length/data.rate*1000});if(this.stats.renders.length>200)this.stats.renders.shift();}
         if(data.type==='error')p.reject(new Error(data.error));else p.resolve({audio:data.audio,rate:data.rate});
@@ -131,8 +140,9 @@ export class RadioVoice {
     }
     const id=++this.serial;onId?.(id);
     return new Promise((resolve,reject)=>{
-      // Loads get four minutes; a render is re-timed when the worker starts it (see 'begin').
-      const timer=setTimeout(()=>this.dropOut(type==='load'?'Neural voice loading timed out.':TIMED_OUT),type==='load'?240000:300000);
+      // A load fails after loadIdleMs without progress (see the progress handler); a render is re-timed when the worker starts it (see 'begin').
+      const timer=setTimeout(()=>this.dropOut(type==='load'?'Neural voice loading stopped making progress.':TIMED_OUT),type==='load'?this.loadIdleMs:300000);
+      if(type==='load')this.loadId=id;
       this.pending.set(id,{resolve,reject,timer});this.worker!.postMessage({id,type,text,speaker,prefer,local:type==='load'?this.onDisk:undefined});
     });
   }
@@ -171,16 +181,16 @@ export class RadioVoice {
     if(this.local)this.onDisk=await this.local;
     this.onStatus(this.onDisk?'Loading neural voices from this computer…':'Loading neural voices · the first visit downloads about 90 MB on CPU, 310 MB with a GPU');
     if(gpuAllowed()){
-      this.arm();
+      this.gpuLoading=true;
       try{
         await this.request('load','','ENGINEER',undefined,'webgpu');
-        // The worker fell back to the CPU itself (GPU error or silent audio): skip the GPU next time.
-        if(this.device!=='webgpu')preferCpu();
+        // The worker fell back to the CPU for a GPU reason (error or silent audio): skip the GPU for a day.
+        if(this.device!=='webgpu'&&this.fallback)preferCpu();
         return;
       }catch(e){
         if(!(e instanceof Error&&e.message===STALLED))throw e;
         preferCpu();this.stage='cpu';this.downloads.clear();this.progress=0;this.onStatus('GPU voices stalled in this browser · switching to CPU voices');
-      }finally{this.disarm();}
+      }finally{this.gpuLoading=false;this.disarm();}
     }
     await this.request('load','','ENGINEER',undefined,'wasm');
   }

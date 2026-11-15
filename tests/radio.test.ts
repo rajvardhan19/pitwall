@@ -136,7 +136,9 @@ test('a stalled GPU voice load falls back to the CPU voices and remembers it for
   const radio=setup();radio.stallMs=30;const statuses:string[]=[];radio.onStatus=t=>statuses.push(t);
   const loading=radio.prepare();const gpuWorker=FakeWorker.last;
   assert.equal(gpuWorker.requests[0].prefer,'webgpu');
-  gpuWorker.reply({type:'stage',stage:'gpu'});await wait(60);
+  gpuWorker.reply({type:'stage',stage:'gpu'});
+  // Download done; then the silent GPU set-up never finishes.
+  gpuWorker.reply({type:'progress',file:'onnx/model.onnx',loaded:326e6,total:326e6,progress:100});await wait(60);
   const cpuWorker=FakeWorker.last;assert.notEqual(cpuWorker,gpuWorker);assert.equal(cpuWorker.requests[0].prefer,'wasm');
   assert.ok(statuses.some(s=>/switching to CPU voices/.test(s)));
   cpuWorker.reply({id:cpuWorker.requests[0].id,type:'ready',device:'wasm'});await loading;
@@ -248,3 +250,20 @@ test('a line at the front of the queue still plays after a slow render, even pas
   worker.reply({id:speakOf(worker).id,type:'audio',audio:new Float32Array(240),rate:24000});await flush();await flush();
   assert.equal(aired,1);assert.equal(radio.stats.stale,0);radio.interrupt();
 });
+test('a stalled download is not a GPU stall: the load fails with a retry instead of moving to the CPU voices',()=>withGpu(async store=>{
+  const radio=setup();radio.stallMs=30;radio.loadIdleMs=60;const statuses:string[]=[];radio.onStatus=t=>statuses.push(t);
+  const loading=radio.prepare();const worker=FakeWorker.last;
+  worker.reply({type:'stage',stage:'gpu'});worker.reply({type:'progress',file:'onnx/model.onnx',loaded:50e6,total:326e6,progress:15});
+  await wait(40);assert.equal(FakeWorker.last,worker,'mid-download silence does not switch to the CPU voices');
+  await assert.rejects(loading,/stopped making progress/);
+  assert.equal(store.has('pitwall.voice.cpu.v2'),false);assert.ok(statuses.some(s=>/Voices unavailable/.test(s)));
+}));
+test('CPU voices are remembered only for a GPU fault, never for a network failure',()=>withGpu(async store=>{
+  let radio=setup();let load=radio.prepare();let worker=FakeWorker.last;
+  worker.reply({id:worker.requests[0].id,type:'ready',device:'wasm',fallback:'GPU voices rendered silence'});await load;
+  assert.ok(store.has('pitwall.voice.cpu.v2'),'a silent GPU render is remembered');assert.equal(radio.fallback,'GPU voices rendered silence');
+  store.delete('pitwall.voice.cpu.v2');
+  radio=setup();load=radio.prepare();worker=FakeWorker.last;
+  worker.reply({id:worker.requests[0].id,type:'error',error:'Failed to fetch: status 503'});
+  await assert.rejects(load,/503/);assert.equal(store.has('pitwall.voice.cpu.v2'),false,'a network failure is offered as a retry, not remembered');
+}));

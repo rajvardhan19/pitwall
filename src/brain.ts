@@ -26,6 +26,9 @@ export class TeamBrain {
   progress = 0;
   warming = false;
   private downloads: Downloads = new Map();
+  private loadId = 0;
+  /** The model load fails only after this long without progress: a slow but steady 1 GB download is never cut off. */
+  loadIdleMs = 120000;
   private worker: Worker | null = null;
   private serial = 0;
   private turn = 0;
@@ -39,6 +42,8 @@ export class TeamBrain {
     if (!this.worker) {
       this.worker = new Worker(new URL('./brain-worker.ts', import.meta.url), { type: 'module' });
       this.worker.onmessage = ({ data }) => {
+        // A load that keeps reporting is alive: restart its idle timer.
+        if (data.type === 'progress' || data.type === 'stage') { const load = this.pending.get(this.loadId); if (load) { clearTimeout(load.timer); load.timer = setTimeout(() => this.reset('Team chat download stopped making progress.'), this.loadIdleMs); } }
         if (data.type === 'progress') { this.downloads.set(String(data.file), { loaded: data.loaded ?? 0, total: data.total ?? 0 }); this.progress = weightsProgress(this.downloads); if (this.state === 'loading') this.onStatus(`Loading team chat model${this.onDisk ? ' from this computer' : ''} · ${Math.round(this.progress * 100)}%`); return; }
         if (data.type === 'stage') { this.warming = true; if (this.state === 'loading') this.onStatus(data.text); return; }
         const p = this.pending.get(data.id);
@@ -52,7 +57,8 @@ export class TeamBrain {
     }
     const id = ++this.serial;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.reset('Team chat model timed out.'), timeout);
+      const timer = setTimeout(() => this.reset(message.type === 'load' ? 'Team chat download stopped making progress.' : 'Team chat model timed out.'), message.type === 'load' ? this.loadIdleMs : timeout);
+      if (message.type === 'load') this.loadId = id;
       this.pending.set(id, { resolve, reject, timer });
       this.worker!.postMessage({ id, ...message });
     });
