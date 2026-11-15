@@ -60,10 +60,12 @@ self.onmessage=(event:MessageEvent<{id:number;type:'load'|'speak'|'cancel';text:
       if(type==='load'){self.postMessage({id,type:'ready',device});return;}
       self.postMessage({id,type:'begin'});
       const profile=voiceProfile(speaker);
+      const started=performance.now();
       const result=await tts.generate(spokenText(text),{voice:profile.voice,speed:profile.rate});
+      const ms=performance.now()-started;
       const audio=Float32Array.from(Array.isArray(result.audio)?result.audio[0]:result.audio);
       if(!audible(audio))throw new Error('Voice generation returned silent or invalid audio. Try reloading the headset.');
-      self.postMessage({id,type:'audio',audio,rate:result.sampling_rate},{transfer:[audio.buffer]});
+      self.postMessage({id,type:'audio',audio,rate:result.sampling_rate,ms},{transfer:[audio.buffer]});
     }catch(e){self.postMessage({id,type:'error',error:e instanceof Error?e.message:String(e)});}
   });
 };

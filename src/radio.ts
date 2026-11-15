@@ -10,7 +10,7 @@ export {voiceProfile} from './radio-profile.ts';
 export interface RadioLine {text:string;speaker:string;priority:number;at:number;ttl:number}
 type Clip={audio:Float32Array;rate:number};
 interface Part {text:string;request?:number;clip?:Promise<Clip>}
-interface Item extends RadioLine {parts:Part[]}
+interface Item extends RadioLine {parts:Part[];cut?:boolean}
 
 const MAX_QUEUE=12;        // anything further back would be stale by the time it played
 const PREFETCH=2;         // synthesise the next line while the current one plays
@@ -23,10 +23,15 @@ const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 const STAGES={gpu:'Starting voices on this device’s GPU…',probe:'Testing the radio voices…',cpu:'Loading CPU voices · replies may lag'};
 // A browser whose GPU voices stalled once goes straight to the CPU voices next time. Keyed to the
 // user agent, so a browser update gets a fresh try.
-const CPU_KEY='pitwall.voice.cpu';
+// Expires after a day, so a one-off stall (or a fixed browser bug) does not keep a GPU-capable browser on the
+// slow CPU voices for good. (v2: CPU preferences saved before this rule are ignored.)
+const CPU_KEY='pitwall.voice.cpu.v2';const CPU_DAYS=1;
 function store(){try{return typeof localStorage==='undefined'?null:localStorage;}catch{return null;}}
-function gpuAllowed(){return typeof navigator!=='undefined'&&'gpu' in navigator&&store()?.getItem(CPU_KEY)!==navigator.userAgent;}
-function preferCpu(){try{store()?.setItem(CPU_KEY,navigator.userAgent);}catch{/* private mode */}}
+function gpuAllowed(){
+  if(typeof navigator==='undefined'||!('gpu' in navigator))return false;
+  try{const saved=JSON.parse(store()?.getItem(CPU_KEY)??'null') as {ua:string;at:number}|null;return !(saved&&saved.ua===navigator.userAgent&&Date.now()-saved.at<CPU_DAYS*864e5);}catch{return true;}
+}
+function preferCpu(){try{store()?.setItem(CPU_KEY,JSON.stringify({ua:navigator.userAgent,at:Date.now()}));}catch{/* private mode */}}
 
 /**
  * Long lines are spoken sentence by sentence, so the first sentence airs as soon as it is
@@ -54,14 +59,18 @@ export class RadioVoice {
   enabled=false;blocked=false;ready=false;
   /** Until the live voices load, play only the bundled clips and leave every other line as text, so nothing holds the race. */
   textUntilReady=false;
-  /** Give up on the GPU voices after this long without any sign of progress, and load the CPU voices instead. */
-  stallMs=20000;
+  /** Give up on the GPU voices after this long without any sign of progress, and load the CPU voices instead.
+   *  Generous: the first GPU render compiles shaders, which can be slow in Safari, and a false stall leaves the
+   *  browser on CPU voices that render about 3x slower than speech. */
+  stallMs=45000;
   /** One render's time limit, counted from when the worker starts it, not while it waits its turn. */
   renderMs=60000;
   /** How long past a clip's length to wait for it to end before treating the audio output as stalled. */
   playSlackMs=2000;
   /** False on phones and weak devices: nothing is downloaded; recorded team clips play and every other line stays text. */
   neural=true;
+  /** What happened to the lines offered to the radio, and how long renders take (render ms vs audio ms gives the speed). */
+  stats={offered:0,aired:0,stale:0,failed:0,cut:0,renders:[] as {ms:number;audioMs:number}[]};
   /** Download progress of the voice model, 0–1, for the setup screen. */
   progress=0;
   /** Model files saved on this computer, if the page looked for them (resolved before the first load). */
@@ -76,7 +85,7 @@ export class RadioVoice {
   private queue:Item[]=[];private current:Item|null=null;private speaking=false;private generation=0;
   private worker:Worker|null=null;private serial=0;private loading:Promise<void>|null=null;
   private watchdog:ReturnType<typeof setTimeout>|null=null;private stage='';
-  private downloads:Downloads=new Map();private everReady=false;private recoveries=0;private failures=0;
+  private downloads:Downloads=new Map();private waitingSince=0;private everReady=false;private recoveries=0;private failures=0;
   private pending=new Map<number,{resolve:(clip:Clip)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   private context:AudioContext|null=null;private source:AudioBufferSourceNode|null=null;
   private cache=new Map<string,Clip>();
@@ -84,6 +93,8 @@ export class RadioVoice {
   get busy(){return this.speaking||this.queue.length>0;}
   /** Slow to real time while rendering; speech generation must never stop the race. */
   get buffering(){return this.busy&&this.source===null;}
+  /** A line has waited more than a second for its voice: worth showing the player. */
+  get slow(){return this.waitingSince>0&&Date.now()-this.waitingSince>1000;}
   pace(requested:number){return !this.enabled?requested:this.blocked?0:this.busy?1:requested;}
 
   unlock(){
@@ -113,6 +124,7 @@ export class RadioVoice {
         }
         if(data.type==='ready')this.device=data.device??'wasm';
         const p=this.pending.get(data.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(data.id);
+        if(data.type==='audio'&&data.ms){this.stats.renders.push({ms:data.ms,audioMs:data.audio.length/data.rate*1000});if(this.stats.renders.length>200)this.stats.renders.shift();}
         if(data.type==='error')p.reject(new Error(data.error));else p.resolve({audio:data.audio,rate:data.rate});
       };
       this.worker.onerror=()=>this.dropOut('The neural voice worker stopped.');
@@ -208,6 +220,7 @@ export class RadioVoice {
     if(this.cache.size>CACHE_SIZE)this.cache.delete(this.cache.keys().next().value!);
   }
   private stale(item:Item){return this.clock()-item.at>item.ttl;}
+  private pruneStale(){const expired=this.queue.filter(i=>this.stale(i));if(!expired.length)return;this.stats.stale+=expired.length;this.drop(expired);this.queue=this.queue.filter(i=>!expired.includes(i));}
   /** Start synthesis for the items that will play soonest, first sentence first. */
   private prefetch(){
     // Only the first sentence of each upcoming turn. Rendering every sentence at once
@@ -240,8 +253,8 @@ export class RadioVoice {
     // A pre-rendered cue covers the whole line; otherwise speak it sentence by sentence.
     const parts=(radioCue(l.speaker,l.text)?[l.text]:sentences(l.text)).map(text=>({text}));
     const item:Item={...l,parts};
-    this.drop(this.queue.filter(i=>this.stale(i)));
-    this.queue=this.queue.filter(i=>!this.stale(i));
+    this.stats.offered++;
+    this.pruneStale();
     this.queue.push(item);
     this.queue.sort((a,b)=>b.priority-a.priority||a.at-b.at);
     if(this.queue.length>MAX_QUEUE)this.drop(this.queue.splice(MAX_QUEUE));
@@ -250,6 +263,13 @@ export class RadioVoice {
   /** Convenience for previews and one-off calls. */
   say(text:string,speaker='ENGINEER',urgent=false){
     this.line({text,speaker,priority:urgent?3:['LAU','REY'].includes(speaker)?2:1,at:this.clock(),ttl:30});
+  }
+  /** The player answered or gave a call: stop the line on air, but keep the rest of the queue (the microphone interrupts everything). */
+  cut(){
+    const item=this.current;if(!item)return;
+    item.cut=true;this.stats.cut++;
+    this.queue=this.queue.filter(i=>i!==item);this.drop([item]);
+    if(this.source){try{this.source.stop();}catch{/* already stopped */}}
   }
   interrupt(){
     this.generation++;
@@ -260,23 +280,28 @@ export class RadioVoice {
   }
   private async next(){
     if(this.speaking||!this.queue.length||!this.enabled||this.blocked)return;
-    const expired=this.queue.filter(i=>this.stale(i));this.drop(expired);
-    this.queue=this.queue.filter(i=>!this.stale(i));
+    this.pruneStale();
     this.prefetch();
     let item=this.queue[0];if(!item)return;
     this.speaking=true;this.current=item;const generation=this.generation;
+    // Only say "preparing" when a render is actually slow: on a GPU the first sentence takes about half a second.
+    this.waitingSince=Date.now();
+    const slowNotice=setTimeout(()=>{if(this.waitingSince&&this.current)this.onStatus(`Preparing ${voiceProfile(this.current.speaker).short??this.current.speaker}’s radio…`);},1000);
     try{
-      this.onStatus(`Preparing ${voiceProfile(item.speaker).short??item.speaker}’s radio · race continues at 1×`);
       // Wait for the head's first sentence. If a more urgent line was queued meanwhile, it goes first.
+      let waitStart=this.clock();
       let clip=await item.parts[0].clip!;
       for(;;){
         if(generation!==this.generation||!this.enabled||this.blocked)return;
-        this.drop(this.queue.filter(i=>this.stale(i)));this.queue=this.queue.filter(i=>!this.stale(i));
+        // A line does not age while its own voice renders: once it reaches the front, it plays.
+        item.at+=this.clock()-waitStart;
+        this.pruneStale();
         const head=this.queue[0];
         if(!head)return;
         if(head===item)break;
-        item=head;this.current=item;this.prefetch();clip=await item.parts[0].clip!;
+        item=head;this.current=item;this.prefetch();waitStart=this.clock();clip=await item.parts[0].clip!;
       }
+      clearTimeout(slowNotice);this.waitingSince=0;
       this.queue.shift();this.prefetch();
       const ctx=this.context!;
       await this.wake(ctx);
@@ -285,12 +310,14 @@ export class RadioVoice {
       const compressor=ctx.createDynamicsCompressor();compressor.threshold.value=-25;compressor.knee.value=12;compressor.ratio.value=4;compressor.attack.value=.003;compressor.release.value=.12;
       const gain=ctx.createGain();gain.gain.value=.85;
       high.connect(low).connect(compressor).connect(gain).connect(ctx.destination);
+      this.stats.aired++;
       this.onAir(item.speaker,item.text);this.onStatus((this.ready?'Neural radio · ':'Team radio · ')+voiceProfile(item.speaker).label);
       try{
         for(let i=0;i<item.parts.length;i++){
+          if(item.cut)return;
           if(i>0){this.renderPart(item,item.parts[i]);clip=await item.parts[i].clip!;}
           if(i+1<item.parts.length)this.renderPart(item,item.parts[i+1]);
-          if(generation!==this.generation)return;
+          if(generation!==this.generation||item.cut)return;
           const buffer=ctx.createBuffer(1,clip.audio.length,clip.rate);buffer.copyToChannel(new Float32Array(clip.audio),0);
           const source=ctx.createBufferSource();source.buffer=buffer;this.source=source;source.connect(high);
           // If the clip never reports its end (Safari paused the output), move on rather than hold the radio forever.
@@ -314,7 +341,7 @@ export class RadioVoice {
         else if(!this.loading||this.ready)this.onStatus(`Radio unavailable: ${message}`,true);
       }
     }
-    finally{if(generation===this.generation){this.speaking=false;this.current=null;this.onSilent();void this.next();}}
+    finally{clearTimeout(slowNotice);this.waitingSince=0;if(generation===this.generation){this.speaking=false;this.current=null;this.onSilent();void this.next();}}
   }
 }
 export interface Recognition {

@@ -141,7 +141,7 @@ test('a stalled GPU voice load falls back to the CPU voices and remembers it for
   assert.ok(statuses.some(s=>/switching to CPU voices/.test(s)));
   cpuWorker.reply({id:cpuWorker.requests[0].id,type:'ready',device:'wasm'});await loading;
   assert.equal(radio.ready,true);assert.equal(radio.device,'wasm');
-  assert.equal(store.get('pitwall.voice.cpu'),navigator.userAgent);
+  const saved=JSON.parse(store.get('pitwall.voice.cpu.v2')!);assert.equal(saved.ua,navigator.userAgent);
   // Next session in the same browser skips the GPU attempt.
   const next=setup();const nextLoad=next.prepare();assert.equal(FakeWorker.last.requests[0].prefer,'wasm');
   FakeWorker.last.reply({id:FakeWorker.last.requests[0].id,type:'ready',device:'wasm'});await nextLoad;
@@ -151,7 +151,7 @@ test('a GPU voice download that keeps reporting progress is not mistaken for a s
   for(let i=0;i<6;i++){await wait(15);worker.reply({type:'progress',progress:i*20});}
   assert.equal(FakeWorker.last,worker);
   worker.reply({id:worker.requests[0].id,type:'ready',device:'webgpu'});await loading;
-  assert.equal(radio.device,'webgpu');assert.equal(store.has('pitwall.voice.cpu'),false);
+  assert.equal(radio.device,'webgpu');assert.equal(store.has('pitwall.voice.cpu.v2'),false);
   await wait(60);assert.equal(FakeWorker.last,worker);
 }));
 test('with text radio until the voices load, an unvoiced line never holds the race',async()=>{
@@ -218,4 +218,33 @@ test('text radio (phones and weak devices) downloads nothing, and unvoiced lines
   const radio=setup();radio.neural=false;const before=FakeWorker.last;
   await radio.prepare();await radio.preload();assert.equal(FakeWorker.last,before);assert.equal(radio.ready,false);
   radio.say('Box this lap, Theo. Mediums.','STRATEGIST');assert.equal(radio.busy,false);assert.equal(radio.pace(15),15);assert.equal(FakeWorker.last,before);
+});
+test('a saved CPU-voices preference expires after a day, and preferences saved before that rule are ignored',()=>withGpu(async store=>{
+  store.set('pitwall.voice.cpu',navigator.userAgent); // the old, permanent form
+  let radio=setup();let load=radio.prepare();assert.equal(FakeWorker.last.requests[0].prefer,'webgpu');
+  FakeWorker.last.reply({id:FakeWorker.last.requests[0].id,type:'ready',device:'webgpu'});await load;
+  store.set('pitwall.voice.cpu.v2',JSON.stringify({ua:navigator.userAgent,at:Date.now()-2*864e5}));
+  radio=setup();load=radio.prepare();assert.equal(FakeWorker.last.requests[0].prefer,'webgpu','two days later the GPU gets another try');
+  FakeWorker.last.reply({id:FakeWorker.last.requests[0].id,type:'ready',device:'webgpu'});await load;
+  store.set('pitwall.voice.cpu.v2',JSON.stringify({ua:navigator.userAgent,at:Date.now()}));
+  radio=setup();load=radio.prepare();assert.equal(FakeWorker.last.requests[0].prefer,'wasm');
+  FakeWorker.last.reply({id:FakeWorker.last.requests[0].id,type:'ready',device:'wasm'});await load;
+}));
+test('answering cuts only the line on air: the rest of the team radio still plays',async()=>{
+  const {radio,worker}=await readyRadio();const aired:string[]=[];radio.onAir=(_s,t)=>aired.push(t);
+  radio.say('Question for you.','STRATEGIST');radio.say('Tyres are fine.','TYRE SPECIALIST');radio.say('Gap is stable.','DATA ENGINEER');await flush();
+  const speak=()=>worker.requests.filter(r=>r.type==='speak');
+  for(const r of speak())worker.reply({id:r.id,type:'audio',audio:new Float32Array(24000),rate:24000});await flush();await flush();
+  assert.deepEqual(aired,['Question for you.']);
+  radio.cut();await flush();await flush();
+  for(const r of speak())worker.reply({id:r.id,type:'audio',audio:new Float32Array(24000),rate:24000});await flush();await flush();
+  assert.equal(aired.length,2,'the next queued line plays after the cut');assert.equal(radio.stats.cut,1);
+  radio.interrupt();
+});
+test('a line at the front of the queue still plays after a slow render, even past its time to live',async()=>{
+  const {radio,worker}=await readyRadio();let race=0;radio.clock=()=>race;let aired=0;radio.onAir=()=>aired++;
+  radio.line({text:'Box this lap.',speaker:'STRATEGIST',priority:2,at:0,ttl:10});await flush();
+  race=40; // the render took 40 race seconds
+  worker.reply({id:speakOf(worker).id,type:'audio',audio:new Float32Array(240),rate:24000});await flush();await flush();
+  assert.equal(aired,1);assert.equal(radio.stats.stale,0);radio.interrupt();
 });

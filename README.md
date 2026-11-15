@@ -23,9 +23,9 @@ npm run preview
 
 ## Play online
 
-**https://rajvardhan19.github.io/F1RaceEngineer/** (GitHub Pages). On a desktop browser with GPU access, the first visit downloads the voices and team chat (about 1.4 GB) from Hugging Face behind the start lights; later visits load from the browser's copy. Phones and weak devices get text radio with the recorded team clips.
+**https://rajvardhan19.github.io/pitwall/** (GitHub Pages). On a desktop browser with GPU access, the first visit downloads the voices and team chat (about 1.4 GB) from Hugging Face behind the start lights; later visits load from the browser's copy. Phones and weak devices get text radio with the recorded team clips.
 
-Every push to `main` publishes it: `.github/workflows/pages.yml` runs the tests, builds for the `/F1RaceEngineer/` subpath and deploys to Pages. The site is built on GitHub because its secret scanner blocks pushes of the built files: a model class name in transformers.js (`Mistral3ForConditionalGeneration`) looks like a Mistral API key to it.
+Every push to `main` publishes it: `.github/workflows/pages.yml` runs the tests, builds for the `/pitwall/` subpath (the repository's name) and deploys to Pages. The site is built on GitHub because its secret scanner blocks pushes of the built files: a model class name in transformers.js (`Mistral3ForConditionalGeneration`) looks like a Mistral API key to it.
 
 ## Play
 

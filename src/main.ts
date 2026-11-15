@@ -37,7 +37,9 @@ let setup=loadSetup();
 let race=createRace(setup);let speed=1;let selected=1;let lastLine=0;let accumulator=0;let lastFrame=performance.now();
 let guided=true;let briefing=true;let debrief=false;let finishedWall=0;let comparison:DebriefAnalysis|null=null;let analysisWorker:Worker|null=null;let analysisProgress='';let inspectedDriver=1;let lastAirTime=0;let onAir=false;let thinking:BrainCall|null=null;
 const airedLines=new Set<number>();
-const voice=new RadioVoice();voice.textUntilReady=true;const sound=new PitwallSound();const brain=new TeamBrain();
+const voice=new RadioVoice();voice.textUntilReady=true;
+// For diagnosing the radio from the browser console or a test driver.
+(window as unknown as {pitwallRadio:()=>unknown}).pitwallRadio=()=>({device:voice.device,ready:voice.ready,...voice.stats});const sound=new PitwallSound();const brain=new TeamBrain();
 const nextTyre:Record<number,Compound>={1:'medium',2:'medium'};
 let convo=newConversation();
 function newConversation(){
@@ -189,7 +191,8 @@ function interruptRadio(){thinking=null;brain.cancelReplies();voice.interrupt();
 function send(command:Command) {interruptRadio();convo.recentCar=command.car;convo.execute(race,[command]);render();}
 function submit(text:string) {
   if(!text.trim())return;
-  interruptRadio();
+  // Your call cuts the line on air; the rest of the team's queued radio still plays.
+  thinking=null;brain.cancelReplies();voice.cut();
   const call=convo.hear(race,text);
   if(call)askBrain(call);
   render();
@@ -241,7 +244,7 @@ function useLite(reason:string,forced=true){
 function loadingHTML(){
   if(!device)return `<div class="team-loading" data-gate><div class="gate-head"><b>CHECKING THIS DEVICE…</b></div></div>`;
   if(device.tier==='lite')return `<div class="team-loading lite" data-gate><div class="gate-head"><b>TEXT RADIO ON THIS DEVICE</b></div><p>Your team talks on screen, with recorded team clips. Neural voices and team chat need a desktop browser with GPU access and a one-time 1.4 GB download${device.forced?'':` (this looks like a ${esc(device.reason)})`}.</p><div class="gate-actions"><button type="button" class="secondary" data-gate-action="full">Load voices and team chat anyway</button></div></div>`;
-  return `<div class="team-loading" data-gate aria-label="Team preparation"><div class="gate-head"><b data-gate-title>PREPARING YOUR TEAM</b><span data-gate-pct>0%</span></div><div class="start-lights" data-lights aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><div class="gate-bar"><span data-gate-bar></span></div><p data-loading-radio>${esc(radioLoadingStatus)}</p><p data-loading-chat>${esc(chatLoadingStatus)}</p><div class="gate-actions" data-gate-actions></div><small data-loading-note>${loadingNote()}</small></div>`;
+  return `<div class="team-loading" data-gate aria-label="Team preparation"><div class="gate-head"><b data-gate-title>PREPARING YOUR TEAM</b><span data-gate-pct>0%</span></div><div class="start-lights" data-lights aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><div class="gate-bar"><span data-gate-bar></span></div><p data-loading-radio>${esc(radioLoadingStatus)}</p><p data-loading-chat>${esc(chatLoadingStatus)}</p><p class="gate-warn" data-gate-warn hidden></p><div class="gate-actions" data-gate-actions></div><small data-loading-note>${loadingNote()}</small></div>`;
 }
 /** Re-render the setup panel (after the device check, or a switch between full and text radio). */
 function refreshLoader(){document.querySelectorAll('[data-gate]').forEach(el=>el.outerHTML=loadingHTML());updateLoading();}
@@ -261,6 +264,9 @@ function updateLoading(){
   const actions=voiceFailure?`<button type="button" class="secondary" data-gate-action="retry-voices">Retry voices</button><button type="button" class="secondary" data-gate-action="text-radio">Race with text radio</button>`
     :chatFailure&&!withoutChat?`<button type="button" class="secondary" data-gate-action="retry-chat">Retry team chat</button><button type="button" class="secondary" data-gate-action="no-chat">Race without team chat</button>`:'';
   document.querySelectorAll('[data-gate-actions]').forEach(el=>{if(el.innerHTML!==actions)el.innerHTML=actions;});
+  // CPU voices render about 3x slower than speech: say so, rather than let the radio lag without explanation.
+  const slowVoices=voice.ready&&voice.device==='wasm';
+  document.querySelectorAll<HTMLElement>('[data-gate-warn]').forEach(el=>{el.hidden=!slowVoices;el.textContent=slowVoices?'Voices are running on the CPU in this browser, about 3× slower than speech, so the team will sound late. A browser with GPU access (Chrome, for example) gives smooth radio.':'';});
   const start=document.querySelector<HTMLButtonElement>('#start-session');
   if(start&&race.status==='ready'){
     start.dataset.label??=start.innerHTML;
@@ -530,7 +536,7 @@ function frame(now:number) {
     }
   }
   convo.tick(race);
-  if(now-lastRender>200){render();if(race.status==='running'&&voice.enabled&&voice.busy)$('#flag').textContent=voice.buffering?'◌ PREPARING RADIO · RACING AT 1×':'● TEAM RADIO · 1×';lastRender=now;}
+  if(now-lastRender>200){render();if(race.status==='running'&&voice.enabled&&voice.busy)$('#flag').textContent=voice.slow?'◌ PREPARING RADIO · RACING AT 1×':'● TEAM RADIO · 1×';lastRender=now;}
   requestAnimationFrame(frame);
 }
 renderChrome();render();showBriefing();requestAnimationFrame(frame);

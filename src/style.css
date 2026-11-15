@@ -108,3 +108,4 @@ dialog .debrief-actions .primary{flex:1 1 220px;width:auto}
 @keyframes gate-spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.start-lights i,.start-lights.out i,.gate-bar::after,.gate-spinner{animation:none}.start-lights.out i{background:#1a2219}}
 .team-loading.ready [data-loading-note]{display:none}
+.gate-warn{margin:8px 0;padding:8px 10px;border-left:2px solid #e3c972;background:#2a2716;color:#e9dca4;font-size:12px;line-height:1.5}
