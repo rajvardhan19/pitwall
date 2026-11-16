@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createRace,step,applyCommand,playerCar,order,wetness,slickFor,lapsLeftOn} from '../src/sim.ts';
 import type {Race,RaceSetup} from '../src/sim.ts';
 import {SCENARIOS,CIRCUITS,CALENDAR_2026,schematicPath,pathOf,qualifying,ROSTER,TEAMS} from '../src/scenarios.ts';
+import {CIRCUIT_PATHS} from '../src/circuit-paths.ts';
 import {onTarget} from '../src/race-view.ts';
 import {newSeason,nextRound,seasonOver,seasonSetup,standings,recordRace,simulateRound,loadSeason,saveSeason,briefFor,POINTS} from '../src/season.ts';
 import {Conversation} from '../src/conversation.ts';
@@ -21,7 +22,12 @@ test('the 2026 calendar has 23 rounds in order, each at a known circuit',()=>{
   assert.match(CALENDAR_2026.find(r=>r.circuit==='sepang')!.note!,/Sakhir/);
   assert(!CALENDAR_2026.some(r=>/Saudi/.test(r.gp)),'Jeddah was cancelled');
 });
-test('generated circuit outlines are closed, stay inside the map, and never change',()=>{
+test('every calendar circuit draws its real outline',()=>{
+  for(const r of CALENDAR_2026){assert(CIRCUIT_PATHS[r.circuit],`${r.circuit} has a real outline`);assert.equal(pathOf(CIRCUITS[r.circuit]),CIRCUIT_PATHS[r.circuit]);}
+  // Enough points to keep the corners: a real track, not a schematic loop.
+  for(const [id,d] of Object.entries(CIRCUIT_PATHS))assert(d.split(' L ').length>=40,`${id} has detail`);
+});
+test('circuit outlines are closed, stay inside the map, and never change',()=>{
   for(const c of Object.values(CIRCUITS)){
     const d=pathOf(c);assert(d.startsWith('M ')&&d.endsWith('Z'),c.id);
     const nums=d.match(/-?\d+(\.\d+)?/g)!.map(Number);

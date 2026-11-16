@@ -99,9 +99,30 @@ function renderChrome(){
   // Start/finish line: a short stroke across the track where the path begins.
   const a=path.getPointAtLength(0),b=path.getPointAtLength(6),dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,nx=-dy/len*8,ny=dx/len*8;
   $('#start-line').setAttribute('d',`M ${a.x-nx} ${a.y-ny} L ${a.x+nx} ${a.y+ny}`);
+  placeSectorLabels();
   $('#footer-race').innerHTML=`${esc(title.kicker)} · SEED ${race.seed} <span class="footer-dot">●</span> LOCAL SIMULATION`;
   renderConditions();
 }
+/** Sector labels sit beside the middle of each third of the lap, at the nearby spot furthest from any part of the track. */
+function placeSectorLabels(){
+  const path=$<SVGPathElement&HTMLElement>('#track-path'),wrap=document.querySelector<HTMLElement>('.circuit-wrap'),ctm=path.getScreenCTM(),length=path.getTotalLength();
+  if(!wrap||!ctm||!length)return;
+  const box=wrap.getBoundingClientRect(),track=Array.from({length:240},(_,i)=>path.getPointAtLength(length*i/240));
+  // Labels are wide and short: weigh horizontal distance less, so text clears the line along its length.
+  const clearance=(x:number,y:number)=>Math.min(...track.map(p=>Math.hypot((p.x-x)/1.9,p.y-y)));
+  document.querySelectorAll<HTMLElement>('.sector-label').forEach((label,i)=>{
+    const p=path.getPointAtLength(length*(2*i+1)/6);let best={x:p.x,y:p.y-24,score:-1};
+    for(const r of [20,28,36,46])for(let a=0;a<360;a+=20){
+      const x=p.x+Math.cos(a*Math.PI/180)*r*1.6,y=p.y+Math.sin(a*Math.PI/180)*r;
+      if(x<78||x>442||y<14||y>270)continue;
+      const score=Math.min(clearance(x,y),14)-r*0.05;
+      if(score>best.score)best={x,y,score};
+    }
+    const at=new DOMPoint(best.x,best.y).matrixTransform(ctm);
+    Object.assign(label.style,{left:`${Math.round(at.x-box.left)}px`,top:`${Math.round(at.y-box.top)}px`,right:'auto',bottom:'auto',transform:'translate(-50%,-50%)'});
+  });
+}
+window.addEventListener('resize',()=>placeSectorLabels());
 function renderConditions(){
   const cfg=race.config,circuit=circuitOf(cfg.setup),scenario=scenarioById(cfg.setup.scenario);
   const rain=cfg.setup.mode==='scenario'?scenario.forecast.rainChance:Math.round(circuit.rainChance*100);

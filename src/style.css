@@ -111,3 +111,5 @@ dialog .debrief-actions .primary{flex:1 1 220px;width:auto}
 .gate-warn{margin:8px 0;padding:8px 10px;border-left:2px solid #e3c972;background:#2a2716;color:#e9dca4;font-size:12px;line-height:1.5}
 /* The radio log fills its panel (which stretches with the timing tower) instead of a fixed 272 px box with a dead band below it. */
 #messages{height:auto;flex:1 1 0;min-height:272px}
+/* Sector labels follow the real track (placed in placeSectorLabels) and draw above the map. */
+.sector-label{z-index:1;white-space:nowrap}

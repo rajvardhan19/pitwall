@@ -1,6 +1,7 @@
 // Circuits, the 2026 calendar, curated late-race scenarios, and full-race / season setups.
 // Pure data plus the functions that turn a player's choice into the RaceConfig the simulation runs on.
 import type { Compound } from './sim.ts';
+import { CIRCUIT_PATHS } from './circuit-paths.ts';
 import { ROSTER, teamOf } from './roster.ts';
 export { ROSTER, TEAMS } from './roster.ts';
 
@@ -66,18 +67,14 @@ export const CIRCUITS: Record<string, Circuit> = Object.fromEntries([
   C('suzuka', 'Suzuka Circuit', 'Suzuka', 'Japan', 5.807, 18, 53, 92, 22, 0.8, 1.2, 28, 20, 0.35, 0.2),
   C('miami', 'Miami International Autodrome', 'Miami', 'United States', 5.412, 19, 57, 91, 20, 0.6, 1, 48, 30, 0.5, 0.15),
   C('montreal', 'Circuit Gilles Villeneuve', 'Montreal', 'Canada', 4.361, 14, 70, 75, 18, 0.5, 0.9, 34, 21, 0.6, 0.2),
-  C('monaco', 'Circuit de Monaco', 'Monaco', 'Monaco', 3.337, 19, 78, 74.5, 19, 1.8, 0.65, 46, 23, 0.75, 0, {
-    path: 'M 90 200 L 230 200 Q 250 200 258 186 L 270 160 Q 276 148 290 148 L 330 150 Q 346 150 350 136 L 356 106 Q 360 90 378 92 L 410 98 Q 428 102 424 82 Q 420 64 402 66 L 360 70 Q 344 72 338 58 Q 332 44 316 46 L 240 56 Q 226 58 222 72 L 218 96 Q 214 112 198 112 L 150 110 Q 132 110 126 124 L 108 160 Q 100 176 88 180 Q 70 188 90 200 Z' }),
-  C('barcelona', 'Circuit de Barcelona', 'Barcelona', 'Spain', 4.657, 14, 66, 86, 21, 0.65, 1, 38, 24, 0.45, 0, {
-    path: 'M 88 162 L 195 79 Q 220 59 244 67 L 305 90 Q 320 95 328 78 L 347 41 Q 355 29 369 39 L 407 74 Q 422 88 408 104 L 382 134 Q 367 152 387 164 L 432 193 Q 448 205 431 218 L 390 248 Q 377 257 366 244 L 338 210 Q 331 200 317 208 L 289 225 Q 273 236 260 223 L 224 188 Q 215 179 203 192 L 167 232 Q 151 250 137 236 L 86 190 Q 72 177 88 162 Z' }),
+  C('monaco', 'Circuit de Monaco', 'Monaco', 'Monaco', 3.337, 19, 78, 74.5, 19, 1.8, 0.65, 46, 23, 0.75, 0),
+  C('barcelona', 'Circuit de Barcelona', 'Barcelona', 'Spain', 4.657, 14, 66, 86, 21, 0.65, 1, 38, 24, 0.45, 0),
   C('spielberg', 'Spielberg Ring', 'Spielberg', 'Austria', 4.318, 10, 71, 68, 20, 0.45, 1, 40, 26, 0.3, 0.2),
-  C('silverstone', 'Silverstone Circuit', 'Silverstone', 'Great Britain', 5.891, 18, 52, 89, 21, 0.6, 1.1, 24, 17, 0.5, 0.55, {
-    path: 'M 100 150 L 150 92 Q 160 80 176 84 L 230 100 Q 246 104 256 90 L 284 52 Q 296 36 314 44 L 380 76 Q 398 84 404 102 L 420 160 Q 426 180 410 192 L 360 228 Q 344 240 326 230 L 280 206 Q 266 198 254 208 L 214 240 Q 198 252 182 240 L 116 190 Q 98 176 100 150 Z' }),
+  C('silverstone', 'Silverstone Circuit', 'Silverstone', 'Great Britain', 5.891, 18, 52, 89, 21, 0.6, 1.1, 24, 17, 0.5, 0.55),
   C('spa', 'Circuit de Spa-Francorchamps', 'Spa', 'Belgium', 7.004, 19, 44, 107, 20, 0.4, 0.95, 22, 16, 0.45, 0.5),
   C('hungaroring', 'Hungaroring', 'Budapest', 'Hungary', 4.381, 14, 70, 80, 20, 1.2, 1.05, 50, 31, 0.3, 0.1),
   C('zandvoort', 'Circuit Zandvoort', 'Zandvoort', 'Netherlands', 4.259, 14, 72, 73, 21, 1.3, 0.95, 30, 20, 0.45, 0.25),
-  C('monza', 'Autodromo di Monza', 'Monza', 'Italy', 5.793, 11, 53, 81.5, 24, 0.35, 0.8, 41, 27, 0.35, 0, {
-    path: 'M 120 230 L 400 230 Q 430 230 432 210 L 428 196 Q 424 186 434 180 L 450 160 Q 462 140 452 118 L 430 80 Q 420 62 400 60 L 330 56 Q 312 55 306 66 L 300 74 Q 294 82 282 78 L 240 60 Q 224 52 210 62 L 170 92 Q 150 108 150 128 L 152 160 Q 154 176 140 180 L 100 188 Q 80 194 86 214 Q 92 230 120 230 Z' }),
+  C('monza', 'Autodromo di Monza', 'Monza', 'Italy', 5.793, 11, 53, 81.5, 24, 0.35, 0.8, 41, 27, 0.35, 0),
   C('madrid', 'Madring', 'Madrid', 'Spain', 5.474, 22, 57, 91, 21, 0.8, 1, 35, 24, 0.5, 0.05),
   C('baku', 'Baku City Circuit', 'Baku', 'Azerbaijan', 6.003, 20, 51, 105, 20, 0.4, 0.8, 36, 23, 0.7, 0.05),
   C('sepang', 'Sepang International Circuit', 'Sepang', 'Malaysia', 5.543, 15, 56, 97, 22, 0.55, 1.35, 52, 33, 0.35, 0.45),
@@ -87,8 +84,7 @@ export const CIRCUITS: Record<string, Circuit> = Object.fromEntries([
   C('interlagos', 'Interlagos', 'São Paulo', 'Brazil', 4.309, 15, 71, 72, 21, 0.5, 1, 40, 24, 0.5, 0.45),
   C('lasvegas', 'Las Vegas Strip Circuit', 'Las Vegas', 'United States', 6.201, 17, 50, 95, 20, 0.4, 0.75, 15, 12, 0.5, 0, { warmup: 3 }),
   C('lusail', 'Lusail International Circuit', 'Lusail', 'Qatar', 5.419, 16, 57, 84, 25, 0.7, 1.3, 30, 26, 0.3, 0),
-  C('yasmarina', 'Yas Marina Circuit', 'Abu Dhabi', 'Abu Dhabi', 5.281, 16, 58, 85, 22, 0.7, 0.9, 30, 26, 0.4, 0, {
-    path: 'M 80 230 L 300 230 Q 320 230 326 214 L 334 190 Q 340 176 356 178 L 420 186 Q 444 188 446 166 Q 448 146 426 144 L 360 138 Q 340 136 336 118 L 330 70 Q 326 50 306 50 L 190 54 Q 170 56 172 76 L 176 110 Q 178 128 160 132 L 110 140 Q 90 144 88 164 L 80 210 Q 78 230 80 230 Z' }),
+  C('yasmarina', 'Yas Marina Circuit', 'Abu Dhabi', 'Abu Dhabi', 5.281, 16, 58, 85, 22, 0.7, 0.9, 30, 26, 0.4, 0),
 ].map(c => [c.id, c]));
 
 // The 2026 calendar as reported in November 2026 (crash.net, cross-checked with espn.com):
@@ -147,8 +143,9 @@ export function schematicPath(id: string) {
   return d + ' Z';
 }
 
+/** The circuit's real outline (scripts/build-circuit-paths.mjs), else its own path, else a generated loop. */
 export function pathOf(circuit: Circuit) {
-  return circuit.path ?? schematicPath(circuit.id);
+  return CIRCUIT_PATHS[circuit.id] ?? circuit.path ?? schematicPath(circuit.id);
 }
 
 /** One car in a scenario: seconds behind the leader, tyre, tyre age, and optional pace tweak (s/lap, negative is faster). */
