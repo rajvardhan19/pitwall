@@ -85,6 +85,7 @@ export class Conversation {
   private cursor = 0;
   private lastOrder: number[] = [];
   private counts = new Map<string, number>();
+  private decks = new Map<string, { order: number[]; next: number; round: number }>();
   private done = new Set<string>();
   private started = false;
   private pitInfo = new Map<number, { slow: number; queued: number }>();
@@ -111,11 +112,23 @@ export class Conversation {
 
   // ───────────────────────────── lines and questions ─────────────────────────────
 
+  /**
+   * Choose a wording for a line family. Every variant is used once, in a seeded shuffled order, before any
+   * repeats, and a new round never opens with the wording that closed the last one.
+   */
   private pick(key: string, variants: string[]) {
-    const n = this.counts.get(key) ?? 0;
-    this.counts.set(key, n + 1);
-    const offset = Math.floor(raceRandom(this.seed, 31, hash(key) % 100000, 7) * variants.length);
-    return variants[(offset + n) % variants.length];
+    let deck = this.decks.get(key);
+    if (!deck || deck.order.length !== variants.length || deck.next >= deck.order.length) {
+      const round = (deck?.round ?? -1) + 1, order = variants.map((_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(raceRandom(this.seed, 31, (hash(key) % 100000) + round * 7919 + i, 7) * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      if (deck && order.length > 1 && order[0] === deck.order[deck.order.length - 1]) [order[0], order[1]] = [order[1], order[0]];
+      deck = { order, next: 0, round };
+      this.decks.set(key, deck);
+    }
+    return variants[deck.order[deck.next++]];
   }
 
   private once(key: string) {
@@ -211,10 +224,10 @@ export class Conversation {
       return;
     }
     if (pos === 1 && this.once(`lead-${n}`)) {
-      this.say(r, 'DATA ENGINEER', `${name}, you’re leading the race! P1!`, { priority: 3, ttl: 20 });
+      this.say(r, 'DATA ENGINEER', this.pick(`lead-${n}`, [`${name}, you’re leading the race! P1!`, `P1, ${name}! You’re leading!`, `${name}, that’s the lead! Nobody in front of you!`]), { priority: 3, ttl: 20 });
       this.say(r, DRIVER[n], n === 2 ? 'I’m leading?! Let’s go! Keep the calls coming!' : 'Leading. Understood. Let’s manage it from here.', { priority: 2, ttl: 15 });
     } else if (!onTarget(r, n, was) && onTarget(r, n, pos)) {
-      this.say(r, 'DATA ENGINEER', `That’s P${pos}. ${name} is ${phrase.in}.`, { priority: 2, ttl: 20 });
+      this.say(r, 'DATA ENGINEER', this.pick(`target-in-${n}`, [`That’s P${pos}. ${name} is ${phrase.in}.`, `P${pos} for ${name}. That puts him ${phrase.in}.`, `${name} up to P${pos}, ${phrase.in}.`]), { priority: 2, ttl: 20 });
     } else if (onTarget(r, n, was) && !onTarget(r, n, pos)) {
       this.say(r, 'DATA ENGINEER', `${name} drops to P${pos}. ${phrase.out}`, { kind: 'warning', priority: 2, ttl: 20 });
     } else if (n === 2 && pos === 3 && was > 3 && this.once('podium-2')) {
@@ -319,8 +332,8 @@ export class Conversation {
       const gap = (car.distance - ours1.distance) * lapPace(ours1, r);
       const loss = pitLoss(r) + e.slow;
       this.say(r, 'DATA ENGINEER', gap < loss
-        ? `${rival} pits from P${rivalPos}. ${name} should come out ahead of him.`
-        : `${rival} pits from P${rivalPos}. He’ll rejoin ahead of ${name}, but he’s spent his stop.`, { priority: 1, ttl: 20 });
+        ? this.pick('rival-pits-ahead', [`${rival} pits from P${rivalPos}. ${name} should come out ahead of him.`, `${rival}’s in the pits from P${rivalPos}. ${name} stays ahead of him.`, `Box for ${rival}, from P${rivalPos}. That one goes our way, ${name}.`])
+        : this.pick('rival-pits-behind', [`${rival} pits from P${rivalPos}. He’ll rejoin ahead of ${name}, but he’s spent his stop.`, `${rival} stops from P${rivalPos}. He’ll come out ahead of ${name}, but his stop is done.`, `${rival} boxes from P${rivalPos}. Still ahead of ${name} after it, with no stop left to make.`]), { priority: 1, ttl: 20 });
     } else {
       const gapBack = (ours1.distance - car.distance) * lapPace(car, r);
       const n = numberOf(ours1);
@@ -345,7 +358,7 @@ export class Conversation {
     this.warmUp[n] = { at: r.elapsed, stops: car.stops, done: false };
     this.later(r, 10, r => {
       const c = playerCar(r, n)!;
-      if (c.pitRemaining === 0 && c.finishedAt === null) this.say(r, 'TYRE SPECIALIST', `${firstName(c)}, new ${c.compound}s need a lap to come in. Careful into turn one.`, { priority: 1, ttl: 15 });
+      if (c.pitRemaining === 0 && c.finishedAt === null) this.say(r, 'TYRE SPECIALIST', this.pick(`outlap-${n}`, [`${firstName(c)}, new ${c.compound}s need a lap to come in. Careful into turn one.`, `Cold tyres, ${firstName(c)}. Give the ${c.compound}s a lap before you lean on them.`, `${firstName(c)}, easy on the new ${c.compound}s for a lap. They’re not up to temperature yet.`, `Out-lap, ${firstName(c)}. Build the heat into those ${c.compound}s before you push.`]), { priority: 1, ttl: 15 });
     });
     const info = this.pitInfo.get(id) ?? { slow: 0, queued: 0 };
     const pos = positionOf(r, car), ahead = gapAhead(r, car);
@@ -354,7 +367,7 @@ export class Conversation {
     this.exitAt[n] = r.elapsed;
     this.say(r, 'DATA ENGINEER', lost > 1
       ? `${firstName(car)} out in P${pos}. That stop cost us about ${Math.round(lost)} extra seconds. ${where}`
-      : `Good stop, ${firstName(car)}. Rejoining P${pos}. ${where}`, { priority: 2, ttl: 20 });
+      : this.pick(`good-stop-${n}`, [`Good stop, ${firstName(car)}. Rejoining P${pos}. ${where}`, `Clean stop, ${firstName(car)}. You’re out in P${pos}. ${where}`, `Nice work from the crew. P${pos}, ${firstName(car)}. ${where}`, `${firstName(car)}, that’s a good one. Back out in P${pos}. ${where}`]), { priority: 2, ttl: 20 });
     if (info.slow > 0) {
       this.say(r, DRIVER[numberOf(car)], car.id === 4
         ? this.pick('slow-exit-2', ['What happened in that stop?!', 'That was so slow! Come on!'])
@@ -478,7 +491,12 @@ export class Conversation {
     if([100,220,550,850].includes(t)&&!this.questions.length){
       const n=t===100||t===550?2:1,car=playerCar(r,n)!;
       if(car.finishedAt===null&&car.pitRemaining===0&&!car.pitOrder){
-        const report=tyresReachFinish(car, r)?`${firstName(car)} here. Tyres feel manageable. Can we make these last?`:car.wear<0.4?`${firstName(car)} here. Tyres feel good for now. How long can we run these?`:`${firstName(car)} here. Grip is falling away. How long have we got on these?`;
+        const me=firstName(car);
+        const report=tyresReachFinish(car, r)
+          ?this.pick(`report-ok-${n}`,[`${me} here. Tyres feel manageable. Can we make these last?`,n===2?`Tyres are still alive! Can these go to the end?`:`Tyres are holding up. Are we going to the end on these?`,n===2?`Grip is still there. Do I need to stop again?`:`Feeling consistent. Is the plan to run these to the flag?`])
+          :car.wear<0.4
+            ?this.pick(`report-fresh-${n}`,[`${me} here. Tyres feel good for now. How long can we run these?`,n===2?`These feel great! How long do I get on them?`:`Good grip on these. What’s the target lap for the stop?`])
+            :this.pick(`report-worn-${n}`,[`${me} here. Grip is falling away. How long have we got on these?`,n===2?`The rears are going! How many laps are left in these?`:`Tyres are fading now. How long do they have?`,n===2?`I’m sliding a lot. When are we stopping?`:`Grip’s going off. When’s the stop?`]);
         this.say(r,DRIVER[n],report,{priority:1,ttl:35});
         this.teamReplies.push({due:t+8,car:n,kind:'tyres'});
       }
@@ -505,7 +523,7 @@ export class Conversation {
       const car=playerCar(r,reply.car)!;if(car.finishedAt!==null)continue;
       const name=firstName(car);
       if(reply.kind==='crew'){
-        if(car.pitOrder)this.say(r,'PIT CREW',`${name}, crew ready. ${cap(car.pitOrder)}s on the trolley. See you this lap.`,{priority:2,ttl:20});
+        if(car.pitOrder)this.say(r,'PIT CREW',this.pick(`crew-${reply.car}`,[`${name}, crew ready. ${cap(car.pitOrder)}s on the trolley. See you this lap.`,`${cap(car.pitOrder)}s out and warm, ${name}. We’re ready for you.`,`Crew’s in position, ${name}. ${cap(car.pitOrder)}s waiting.`,`${name}, ${car.pitOrder}s ready in the box. Hit your marks.`]),{priority:2,ttl:20});
         continue;
       }
       if(car.pitRemaining>0||car.pitOrder)continue;
@@ -517,7 +535,7 @@ export class Conversation {
       }else if(reply.kind==='tyres'){
         this.lastTyreTalk[reply.car]=r.elapsed;
         if(!tyresReachFinish(car, r)&&car.wear<0.4){this.say(r,'TYRE SPECIALIST',`About ${plural(Math.floor(lapsOfLife(car, r)),'lap')} in those ${car.compound}s, ${name}. We’ll plan the stop around lap ${currentLap(r)+Math.floor(lapsOfLife(car, r)*0.85)}.`,{priority:2,ttl:30});continue;}
-        this.say(r,'TYRE SPECIALIST',tyresReachFinish(car, r)?`Copy, ${name}. ${tyreLife(car)} percent left. At this pace, these reach the flag.`:(Math.floor(lapsOfLife(car, r))<1?`We see it, ${name}. Those ${car.compound}s are finished. We need another set.`:`We see it, ${name}. About ${plural(Math.floor(lapsOfLife(car, r)),'lap')} left in those ${car.compound}s. We need another set.`),{priority:2,ttl:30});
+        this.say(r,'TYRE SPECIALIST',tyresReachFinish(car, r)?this.pick(`maya-reach-${reply.car}`,[`Copy, ${name}. ${tyreLife(car)} percent left. At this pace, these reach the flag.`,`${tyreLife(car)} percent left, ${name}. That’s enough for the flag at this pace.`,`${name}, ${tyreLife(car)} percent. They’ll go the distance if you hold this pace.`,`Plenty left, ${name}. ${tyreLife(car)} percent, and ${plural(lapsRemaining(car, r),'lap')} to go.`]):(Math.floor(lapsOfLife(car, r))<1?`We see it, ${name}. Those ${car.compound}s are finished. We need another set.`:`We see it, ${name}. About ${plural(Math.floor(lapsOfLife(car, r)),'lap')} left in those ${car.compound}s. We need another set.`),{priority:2,ttl:30});
       }else{
         const ahead=gapAhead(r,car);
         this.say(r,'DATA ENGINEER',ahead?`${name}, ${callName(ahead.car)} is ${seconds(ahead.seconds)} ahead. You’re P${positionOf(r,car)}.`:`${name}, clear air. You’re leading.`,{priority:2,ttl:20});
@@ -530,7 +548,7 @@ export class Conversation {
     if (!car.pitOrder && car.wear >= 0.78 && left > 2 && r.flag === 'green' && !this.openFor(n) && this.quiet(r) && r.elapsed - this.lastTyreTalk[n] > 60 && this.once(`cliff-${n}-${car.stops}`)) {
       // The tyre engineer flags it to the strategist, who brings the decision to you.
       const life = Math.floor(lapsOfLife(car, r));
-      this.say(r, 'TYRE SPECIALIST', `James, ${name}’s ${car.compound}s are at the cliff. About ${plural(life, 'lap')} of grip left, and ${plural(Math.ceil(left), 'lap')} to go.`, { kind: 'warning', priority: 2, ttl: 30 });
+      this.say(r, 'TYRE SPECIALIST', this.pick(`cliff-${n}`, [`James, ${name}’s ${car.compound}s are at the cliff. About ${plural(life, 'lap')} of grip left, and ${plural(Math.ceil(left), 'lap')} to go.`, `James, ${name} is nearly out of tyre. ${plural(life, 'lap')} of grip in those ${car.compound}s, ${plural(Math.ceil(left), 'lap')} to go.`, `Warning on ${name}’s ${car.compound}s, James. ${cap(plural(life, 'lap'))} before they drop off, with ${plural(Math.ceil(left), 'lap')} left.`]), { kind: 'warning', priority: 2, ttl: 30 });
       this.later(r, 5, r => {
         const c = playerCar(r, n)!;
         if (c.pitOrder || c.pitRemaining > 0 || c.finishedAt !== null || this.openFor(n)) return;
@@ -681,7 +699,7 @@ export class Conversation {
       const pitted = ([1, 2] as const).filter(k => { const c = playerCar(r, k)!; return c.pitOrder || c.pitRemaining > 0; });
       if (!pitted.length) this.say(r, 'STRATEGIST', 'No call. Both cars stay out. That’s a big chance gone.', { priority: 2, ttl: 15 });
     } else if (q.kind === 'swap') {
-      this.say(r, 'STRATEGIST', 'No call, so they race. Keep it clean, both of you.', { priority: 1, ttl: 12 });
+      this.say(r, 'STRATEGIST', this.pick('swap-none', ['No call, so they race. Keep it clean, both of you.', 'No team orders. Race each other, but no contact.', 'They’re free to race. Give each other room.']), { priority: 1, ttl: 12 });
     } else if (q.kind === 'plan') {
       const name = firstName(playerCar(r, n)!);
       this.say(r, 'STRATEGIST', this.pick('plan-timeout', [`No call. ${name} stays out for now.`, `Nothing from you, so ${name} stays out.`, `No answer. We leave ${name} out and keep watching.`]), { priority: 1, ttl: 12 });
@@ -764,7 +782,7 @@ export class Conversation {
     const warm = this.warmUp[n];
     if (warm && !warm.done && car.stops === warm.stops && r.elapsed - warm.at > 30) {
       warm.done = true;
-      this.say(r, 'TYRE SPECIALIST', `${firstName(car)}, the tyres are in the window now. Go.`, { priority: 1, ttl: 20 });
+      this.say(r, 'TYRE SPECIALIST', this.pick(`window-${n}`, [`${firstName(car)}, the tyres are in the window now. Go.`, `Tyres are up to temperature, ${firstName(car)}. Push when you’re ready.`, `${firstName(car)}, warm-up done. Full grip from here.`, `Temps are good, ${firstName(car)}. You can lean on them now.`]), { priority: 1, ttl: 20 });
     }
   }
 
@@ -806,23 +824,25 @@ export class Conversation {
       this.mark(r, `filler-${n}`);
       const name = firstName(car), ahead = gapAhead(r, car), behind = gapBehind(r, car);
       if (behind && !behind.car.player && behind.seconds < 2.5) {
-        this.say(r, 'DATA ENGINEER', this.pick(`fill-behind-${n}`, [`${name}, ${callName(behind.car)} is ${seconds(behind.seconds)} behind. Holding steady.`, `Gap to ${callName(behind.car)} behind is ${seconds(behind.seconds)}, ${name}. Keep it clean.`]), { priority: 0, ttl: 15 });
+        const them = callName(behind.car), gap = seconds(behind.seconds), left = plural(lapsRemaining(car, r), 'lap');
+        this.say(r, 'DATA ENGINEER', this.pick(`fill-behind-${n}`, [`${name}, ${them} is ${gap} behind. Holding steady.`, `Gap to ${them} behind is ${gap}, ${name}. Keep it clean.`, `${them} still ${gap} back, ${name}. He’s on ${Math.floor(behind.car.age)}-lap-old ${behind.car.compound}s.`, `Mirrors, ${name}: ${them}, ${gap}. ${cap(left)} to go.`, `${name}, ${gap} to ${them} behind. Just hit your marks.`, `${them} sitting ${gap} behind you, ${name}. Yours are ${Math.floor(car.age)} laps old, his ${Math.floor(behind.car.age)}.`]), { priority: 0, ttl: 15 });
       } else if (ahead && !ahead.car.player && ahead.seconds < 3) {
-        this.say(r, 'DATA ENGINEER', this.pick(`fill-ahead-${n}`, [`${name}, ${seconds(ahead.seconds)} to ${callName(ahead.car)}. Stay with him.`, `${callName(ahead.car)} is ${seconds(ahead.seconds)} up the road, ${name}.`]), { priority: 0, ttl: 15 });
+        const them = callName(ahead.car), gap = seconds(ahead.seconds), left = plural(lapsRemaining(car, r), 'lap');
+        this.say(r, 'DATA ENGINEER', this.pick(`fill-ahead-${n}`, [`${name}, ${gap} to ${them}. Stay with him.`, `${them} is ${gap} up the road, ${name}.`, `${gap} to ${them}, ${name}. He’s on ${Math.floor(ahead.car.age)}-lap-old ${ahead.car.compound}s.`, `${name}, ${them} ahead by ${gap}. ${cap(left)} to go.`, `Gap to ${them}: ${gap}. Keep him honest, ${name}.`, `${them} is the target, ${name}. ${gap}, ${left} left.`]), { priority: 0, ttl: 15 });
       } else {
         const w = car.wear;
         this.say(r, DRIVER[n], n === 2
-          ? this.pick(`fill-feel-2-${w < 0.5 ? 'g' : 'b'}`, w < 0.5 ? ['Car feels good. Rears are holding up.', 'Balance is nice now. I can lean on it.'] : ['Rears are starting to slide a bit.', 'I’m getting oversteer out of the slow corners.'])
-          : this.pick(`fill-feel-1-${w < 0.5 ? 'g' : 'b'}`, w < 0.5 ? ['Car’s working well. Managing the gap.', 'All good here. Tyres feel consistent.'] : ['Fronts are starting to grain a little.', 'Losing a bit of front end in the long corners.']), { priority: 0, ttl: 15 });
+          ? this.pick(`fill-feel-2-${w < 0.5 ? 'g' : 'b'}`, w < 0.5 ? ['Car feels good. Rears are holding up.', 'Balance is nice now. I can lean on it.', 'This thing is mega right now!', 'Grip’s great. Give me someone to chase!', 'Feeling strong. I’ve got more if you want it.'] : ['Rears are starting to slide a bit.', 'I’m getting oversteer out of the slow corners.', 'These tyres are going off fast!', 'Snap oversteer on entry. It’s getting tricky!', 'I’m sliding everywhere. How long do these need to last?'])
+          : this.pick(`fill-feel-1-${w < 0.5 ? 'g' : 'b'}`, w < 0.5 ? ['Car’s working well. Managing the gap.', 'All good here. Tyres feel consistent.', 'Balance is fine. Nothing to report.', 'Comfortable. I can hold this pace.', 'Good grip. I’m looking after the rears.'] : ['Fronts are starting to grain a little.', 'Losing a bit of front end in the long corners.', 'Understeer is creeping in. The turn-in is lazy.', 'Traction is going out of the slow corners.', 'Tyres are past their best. I’m managing it.']), { priority: 0, ttl: 15 });
         // The tyre engineer answers from what the car is actually doing.
         this.later(r, 4, r => {
           const c = playerCar(r, n)!;
           if (c.finishedAt !== null || c.pitRemaining > 0) return;
           this.say(r, 'TYRE SPECIALIST', c.wear < 0.5
-            ? this.pick(`fill-maya-g-${n}`, [`Copy, ${name}. Temperatures look good from here.`, `Data agrees, ${name}. ${tyreLife(c)} percent left.`])
+            ? this.pick(`fill-maya-g-${n}`, [`Copy, ${name}. Temperatures look good from here.`, `Data agrees, ${name}. ${tyreLife(c)} percent left.`, `Looks healthy from here, ${name}. ${tyreLife(c)} percent left on the ${c.compound}s.`, `Confirmed, ${name}. ${cap(c.compound)}s at ${tyreLife(c)} percent.`])
             : n === 2
-              ? this.pick('fill-maya-b-2', [`Copy, Nico. Rear temps are up. Be gentle on the throttle out of the slow corners.`, `We see it. ${tyreLife(c)} percent left on those ${c.compound}s.`])
-              : this.pick('fill-maya-b-1', [`Copy, Theo. Front-left graining. It should clean up in a lap or two.`, `We see it, Theo. ${tyreLife(c)} percent left. ${tyresReachFinish(c, r) ? 'Still enough for the flag.' : 'They won’t reach the flag.'}`]), { priority: 0, ttl: 15 });
+              ? this.pick('fill-maya-b-2', [`Copy, Nico. Rear temps are up. Be gentle on the throttle out of the slow corners.`, `We see it. ${tyreLife(c)} percent left on those ${c.compound}s.`, `Nico, ${tyreLife(c)} percent. Smooth on the throttle and they’ll come back to you.`, `Copy. Rears at ${tyreLife(c)} percent. ${tyresReachFinish(c, r) ? 'They’ll make the flag if you’re gentle.' : 'They won’t last to the flag.'}`])
+              : this.pick('fill-maya-b-1', [`Copy, Theo. Front-left graining. It should clean up in a lap or two.`, `We see it, Theo. ${tyreLife(c)} percent left. ${tyresReachFinish(c, r) ? 'Still enough for the flag.' : 'They won’t reach the flag.'}`, `Copy, Theo. ${tyreLife(c)} percent left. Keep the fronts cool through the fast stuff.`, `Understood, Theo. ${cap(c.compound)}s at ${tyreLife(c)} percent. ${tyresReachFinish(c, r) ? 'We can still make the flag.' : 'They won’t make the flag.'}`]), { priority: 0, ttl: 15 });
         });
       }
       return true;
@@ -856,7 +876,8 @@ export class Conversation {
     if (t.behind && t.behind.delta >= 0.25 && t.behind.s < 4 && this.fresh(r, `threat-${n}-${t.behind.id}`, 150)) {
       const rival = byId(t.behind.id), fresher = rival.age + 3 < car.age;
       this.mark(r, `threat-${n}-${t.behind.id}`);
-      this.say(r, 'DATA ENGINEER', `${name}, ${callName(rival)} is coming. ${cap(amount(t.behind.delta))} a lap quicker, ${seconds(t.behind.s)} behind.${fresher ? ` He’s on fresher ${rival.compound}s.` : ''}`, { kind: 'warning', priority: 2, ttl: 20 });
+      const tail = fresher ? ` He’s on fresher ${rival.compound}s.` : '';
+      this.say(r, 'DATA ENGINEER', this.pick(`threat-${n}`, [`${name}, ${callName(rival)} is coming. ${cap(amount(t.behind.delta))} a lap quicker, ${seconds(t.behind.s)} behind.${tail}`, `Heads up, ${name}: ${callName(rival)}, ${seconds(t.behind.s)} behind and ${amount(t.behind.delta)} a lap faster.${tail}`, `${callName(rival)} is closing, ${name}. ${seconds(t.behind.s)} back, gaining ${amount(t.behind.delta)} a lap.${tail}`]), { kind: 'warning', priority: 2, ttl: 20 });
       this.later(r, 4, r => this.driverReply(r, n, n === 2 ? ['He’s not getting past me!', 'Let him try.'] : ['I see him. I’ll defend into turn one.', 'Copy. I’ll keep it tidy.']));
       return true;
     }
@@ -864,7 +885,7 @@ export class Conversation {
       const rival = callName(byId(t.ahead.id)), lapsToCatch = Math.ceil((t.ahead.s - 0.5) / t.ahead.delta);
       this.mark(r, `closing-${n}-${t.ahead.id}`);
       const outlook = lapsToCatch <= lapsRemaining(car, r) - 1 ? `You’ll be on him in about ${plural(lapsToCatch, 'lap')}.` : 'Not enough laps to catch him at this rate, though.';
-      this.say(r, 'DATA ENGINEER', `${name}, you’re taking ${amount(t.ahead.delta)} a lap out of ${rival}. ${seconds(t.ahead.s)} seconds now. ${outlook}`, { priority: 1, ttl: 20 });
+      this.say(r, 'DATA ENGINEER', this.pick(`closing-${n}`, [`${name}, you’re taking ${amount(t.ahead.delta)} a lap out of ${rival}. ${seconds(t.ahead.s)} seconds now. ${outlook}`, `${rival} is coming back to you, ${name}: ${amount(t.ahead.delta)} a lap. ${seconds(t.ahead.s)} now. ${outlook}`, `${name}, ${amount(t.ahead.delta)} a lap quicker than ${rival}. Gap is ${seconds(t.ahead.s)}. ${outlook}`]), { priority: 1, ttl: 20 });
       const catchable = lapsToCatch <= lapsRemaining(car, r) - 1;
       this.later(r, 4, r => this.driverReply(r, n, catchable
         ? (n === 2 ? ['Copy! Let me at him!', 'I can see him. Keep the gaps coming!'] : ['Copy. I’ll keep chipping away.', 'Understood. Patience.'])
@@ -873,7 +894,8 @@ export class Conversation {
     }
     if (t.behind && t.behind.delta <= -0.4 && t.behind.s > 2 && t.behind.s < 6 && this.fresh(r, `escape-${n}`, 300)) {
       this.mark(r, `escape-${n}`);
-      this.say(r, 'DATA ENGINEER', `Nice work, ${name}. ${seconds(t.behind.s)} to ${callName(byId(t.behind.id))} behind, and growing.`, { priority: 1, ttl: 20 });
+      const them = callName(byId(t.behind.id)), gap = seconds(t.behind.s);
+      this.say(r, 'DATA ENGINEER', this.pick(`escape-${n}`, [`Nice work, ${name}. ${gap} to ${them} behind, and growing.`, `${name}, you’re pulling away from ${them}. ${gap} now.`, `Gap to ${them} is out to ${gap}, ${name}. Good pace.`, `${them} can’t hold you, ${name}. ${gap} and growing.`]), { priority: 1, ttl: 20 });
       return true;
     }
     return false;
@@ -885,7 +907,8 @@ export class Conversation {
     const last = times.at(-1)!, best = Math.min(...times.slice(0, -1));
     if (last >= best) return false;
     this.mark(r, `pb-${n}`);
-    this.say(r, 'DATA ENGINEER', `${firstName(car)}, personal best. ${Math.floor(last / 60)}:${String(last % 60).padStart(2, '0')}.`, { priority: 1, ttl: 20 });
+    const time = `${Math.floor(last / 60)}:${String(last % 60).padStart(2, '0')}`;
+    this.say(r, 'DATA ENGINEER', this.pick(`pb-${n}`, [`${firstName(car)}, personal best. ${time}.`, `Purple for you, ${firstName(car)}. ${time}, your best lap yet.`, `${time}, ${firstName(car)}. That’s your fastest lap.`]), { priority: 1, ttl: 20 });
     this.later(r, 3, r => this.driverReply(r, n, n === 2 ? ['Yes! The car is alive!', 'Mega! There’s more in it!'] : ['Good. There’s a bit more there.', 'Copy. Tyres feel good.']));
     return true;
   }
@@ -895,7 +918,9 @@ export class Conversation {
     if (!close || r.elapsed - close.since < 60 || !this.fresh(r, `stuck-${n}-${close.id}`, 99999)) return false;
     const rival = r.cars.find(c => c.id === close.id)!, name = callName(rival);
     this.mark(r, `stuck-${n}-${close.id}`);
-    this.say(r, DRIVER[n], n === 2 ? `I’m stuck in ${name}’s dirty air. I lose the front in turn three.` : `${name} is quick on the straight. Hard to get close.`, { priority: 1, ttl: 20 });
+    this.say(r, DRIVER[n], n === 2
+      ? this.pick('stuck-2', [`I’m stuck in ${name}’s dirty air. I lose the front in turn three.`, `I can’t follow ${name} through the fast corners! Dirty air!`, `${name}’s too quick on the straights. I need a better exit!`])
+      : this.pick('stuck-1', [`${name} is quick on the straight. Hard to get close.`, `Losing the front behind ${name}. The dirty air is bad here.`, `I can match ${name} in the corners, but not on the straight.`]), { priority: 1, ttl: 20 });
     this.later(r, 4, r => {
       const c = playerCar(r, n)!;
       if (c.finishedAt !== null || c.pitRemaining > 0) return;
@@ -903,7 +928,7 @@ export class Conversation {
       const older = rival.age - c.age;
       this.say(r, 'STRATEGIST', older > 3
         ? `Stay patient, ${firstName(c)}. His tyres are ${Math.round(older)} laps older. He’ll fade.`
-        : c.mode === 'push' ? `Copy. Keep the pressure on. Make him use his tyres.` : `Copy. If you want to attack, we can turn the pace up. Your call, engineer.`, { priority: 1, ttl: 20 });
+        : c.mode === 'push' ? this.pick(`pressure-${n}`, ['Copy. Keep the pressure on. Make him use his tyres.', 'Stay on his gearbox. Force a mistake.', 'Keep him under pressure. He’ll have to defend every corner.']) : this.pick(`attack-offer-${n}`, ['Copy. If you want to attack, we can turn the pace up. Your call, engineer.', 'We can go to push mode if you want him. Your call, engineer.']), { priority: 1, ttl: 20 });
     });
     return true;
   }

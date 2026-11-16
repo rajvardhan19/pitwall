@@ -37,6 +37,7 @@ let setup=loadSetup();
 let race=createRace(setup);let speed=1;let selected=1;let lastLine=0;let accumulator=0;let lastFrame=performance.now();
 let guided=true;let briefing=true;let debrief=false;let finishedWall=0;let comparison:DebriefAnalysis|null=null;let analysisWorker:Worker|null=null;let analysisProgress='';let inspectedDriver=1;let lastAirTime=0;let onAir=false;let thinking:BrainCall|null=null;
 const airedLines=new Set<number>();
+const pitWas:Record<1|2,number>={1:0,2:0};
 const voice=new RadioVoice();voice.textUntilReady=true;
 // For diagnosing the radio from the browser console or a test driver.
 (window as unknown as {pitwallRadio:()=>unknown}).pitwallRadio=()=>({device:voice.device,ready:voice.ready,...voice.stats});const sound=new PitwallSound();const brain=new TeamBrain();
@@ -123,6 +124,8 @@ function render() {
   document.body.classList.toggle('under-safety',race.flag==='safety');
   document.body.classList.toggle('race-running',race.status==='running');
   sound.update(race.status==='running',race.flag==='safety',playerCar(race,selected)!.distance);
+  // The pit crew at work when one of our cars arrives in its box.
+  for(const n of [1,2] as const){const c=playerCar(race,n)!;if(c.pitRemaining>0&&!(pitWas[n]>0)&&race.status==='running')sound.pitStop();pitWas[n]=c.pitRemaining;}
   renderRaceStory();
   $('#clock').textContent=`${Math.floor(race.elapsed/60).toString().padStart(2,'0')}:${(race.elapsed%60).toString().padStart(2,'0')}`;
   $('#tower').classList.toggle('full-field',race.cars.length>12);

@@ -158,7 +158,7 @@ test('team opens the radio and responds to each other without player prompts',()
 });
 test('crew acknowledges the selected compound, but not a cancelled pit call',()=>{
   const {r,c}=race();c.hear(r,'Nico box for hards');runUntil(r,c,r=>r.elapsed>=6);
-  assert(c.lines.some(l=>l.speaker==='PIT CREW'&&/Hards on the trolley/.test(l.text)));
+  assert(c.lines.some(l=>l.speaker==='PIT CREW'&&/\bhards\b/i.test(l.text)),'every crew wording names the compound');
   const other=race();other.c.hear(other.r,'Nico box for hards');other.c.hear(other.r,'Nico stay out');runUntil(other.r,other.c,r=>r.elapsed>=6);
   assert.equal(other.c.lines.some(l=>l.speaker==='PIT CREW'),false);
 });
@@ -213,4 +213,10 @@ test('every pit exit names the driver',()=>{
   const {r,c}=race();c.hear(r,'box both');runUntil(r,c,()=>false,1000);
   const exits=c.lines.filter(l=>/Rejoining P|out in P/.test(l.text));assert(exits.length>=2);
   for(const l of exits)assert.match(l.text,/Theo|Nico/);
+});
+test('radio wordings rotate: a line family uses every variant before repeating, and never repeats back to back',()=>{
+  const {c}=race();const pick=(c as any).pick.bind(c);const seen:string[]=[];
+  for(let i=0;i<12;i++)seen.push(pick('family',['a','b','c','d']));
+  for(let round=0;round<3;round++)assert.deepEqual(new Set(seen.slice(round*4,round*4+4)).size,4,`round ${round} uses every wording`);
+  for(let i=1;i<seen.length;i++)assert.notEqual(seen[i],seen[i-1],'no wording twice in a row');
 });
