@@ -157,3 +157,9 @@
 - Each outline starts at the start/finish line. Its direction was checked against known race directions: 18 of 19 matched, plus Montreal, Mexico City and Madrid (clockwise) once looked up. Marina Bay is raced anticlockwise but traced clockwise, so the build reverses it. Suzuka's figure-eight follows the dataset.
 - `scripts/build-circuit-paths.mjs` projects latitude/longitude to a flat plane, rotates each track to the angle that fills the map most (never mirrored), fits it to the map box and simplifies it (Ramer–Douglas–Peucker, 0.45 units; 48–108 points per track, 29 KB in all). The hand-drawn paths are removed; the generated loop stays only as a fallback.
 - Sector labels used fixed positions drawn for the old shapes. They now sit beside the middle of each third of the lap, at the nearby spot furthest from the track, and draw above the map.
+
+## 2026-11-16 — Open source
+
+- The user asked to make Pitwall open source and open to play. The code is under the MIT License. The README now opens with the play link, a screenshot, what the game is and what it needs, followed by credits and licences for every third-party part (Kokoro and Whisper Apache-2.0, Llama 3.2 Community License, Transformers.js, ONNX Runtime, the f1-circuits outlines under MIT, OFL fonts) and an unofficial-fan-project disclaimer. CONTRIBUTING.md covers setup, structure and ground rules.
+- The Llama 3.2 licence asks products that use the model to show "Built with Llama". The game footer now links it and the GitHub repository; on phones the footer stacks.
+- Repository checked before inviting contributors: no keys or credentials in tracked files. The models are not redistributed (browsers download them from Hugging Face).

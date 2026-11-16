@@ -1,6 +1,19 @@
-# Pitwall — F1 Race Engineer
+# Pitwall
 
-A browser-based race strategy proof of concept. Run the pit wall for two fictional drivers: 15 curated late-race scenarios, full races at any of the 23 rounds of the 2026 calendar, or a whole 2026 season against a fictional 22-driver grid. Built with TypeScript and Vite; all race logic runs locally.
+**Be the race engineer.** Call the tyres, the stops and the team orders, and talk two drivers through a race over live team radio. It runs in your browser, free and open source.
+
+### ▶ [Play now: rajvardhan19.github.io/pitwall](https://rajvardhan19.github.io/pitwall/)
+
+![Pitwall: timing tower, live circuit map, strategy desk and team radio](.github/media/dashboard.png)
+
+- **A team that talks.** Two drivers, a strategist, a tyre engineer and a data engineer report, ask for decisions and react, in seven neural voices. Answer by voice, by typing, or with the quick replies.
+- **Real strategy, honest results.** Tyre wear, pit loss, undercuts, safety cars, rain and intermediates, team orders. The simulation is deterministic: the same race and calls give the same result, and the debrief shows what each of your calls was worth against a default engineer.
+- **15 scenarios, 23 circuits, a full season.** Curated late-race situations, full races at all 23 venues of the 2026 calendar (with their real track outlines), and a 23-round season with standings.
+- **AI that runs on your device.** Voices (Kokoro-82M), speech recognition (Whisper tiny.en) and the team chat (Llama 3.2 1B) all run in the browser with WebGPU. No server, no account, no API keys; your voice never leaves your computer.
+
+**What you need:** a desktop browser with GPU access (recent Chrome or Edge recommended). The first visit downloads about 1.4 GB of models, which the browser keeps for later visits. Phones and devices without GPU access get text radio with recorded team clips.
+
+Teams and drivers are fictional. Pitwall is an unofficial fan project (see the [disclaimer](#disclaimer)). Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Built with Llama.
 
 ## Run
 
@@ -181,3 +194,24 @@ Scenarios were tuned with a strategy sweep (thousands of pit, compound and pace 
 ### Automatic team preparation
 
 Radio voices and team chat now download and warm automatically when the race setup screen opens. The preparation panel shows download and warm-up progress; browser-cached weights are reused when available. Audio playback still starts from the player’s start/headset gesture. Team chat needs WebGPU; unsupported devices retain the existing race conversation and command handling. Failed loads show retry controls and do not stop the race. The first visit still needs the model downloads (roughly 90–310 MB for voices and about 1 GB for chat).
+
+## Credits and licences
+
+The code in this repository is MIT-licensed ([LICENSE](LICENSE)). These parts keep their own licences:
+
+| Part | Source | Licence |
+|---|---|---|
+| Character voices | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad ([ONNX build](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX)), run with [kokoro-js](https://www.npmjs.com/package/kokoro-js) | Apache-2.0 |
+| Speech recognition | [Whisper tiny.en](https://huggingface.co/openai/whisper-tiny.en) by OpenAI ([ONNX build](https://huggingface.co/onnx-community/whisper-tiny.en)) | Apache-2.0 (model card) |
+| Team chat | [Llama 3.2 1B Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) by Meta ([ONNX build](https://huggingface.co/onnx-community/Llama-3.2-1B-Instruct-ONNX)). **Built with Llama.** | [Llama 3.2 Community License](https://www.llama.com/llama3_2/license/) |
+| In-browser inference | [Transformers.js](https://github.com/huggingface/transformers.js) (Hugging Face); [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) (Microsoft) | Apache-2.0; MIT |
+| Circuit outlines | [bacinger/f1-circuits](https://github.com/bacinger/f1-circuits) by Tomislav Bacinger | MIT ([notice](scripts/licenses/f1-circuits-LICENSE.md)) |
+| Typefaces | Barlow Condensed, DM Sans, IBM Plex Mono ([Google Fonts](https://fonts.google.com/)) | SIL Open Font License 1.1 |
+| 2026 calendar | Venues and dates from [Crash.net](https://www.crash.net/f1/news/1073119/1/2026-f1-calendar-full-race-schedule-revealed) and [Formula1.com](https://www.formula1.com/en/latest/article/formula-1-reveals-calendar-for-2026-season.YctbMZWqBvrgyddrnauo8.YctbMZWqBvrgyddrnauo8) | Facts |
+| Sound effects and recorded team clips | Procedural (`src/sound.ts`); clips voiced with Kokoro (`scripts/render-radio-cues.mjs`) | MIT (this repository) |
+
+The models are not stored in this repository: each player's browser downloads them from Hugging Face.
+
+## Disclaimer
+
+Pitwall is an unofficial fan project and is not associated with Formula 1, the FIA, or any team or driver. F1, FORMULA 1, FORMULA ONE, GRAND PRIX and related marks are trademarks of Formula One Licensing B.V. Teams and drivers in the game are fictional; circuit and event names are used only to describe the real venues.
